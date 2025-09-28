@@ -1,0 +1,26 @@
+apiFetch('/api/exams') → apiFetch('/exams')
+
+apiFetch('/api/classes') → apiFetch('/classes')
+
+apiFetch(\/api/classes/${cid}`) → ``apiFetch(/classes/${cid}`)``
+
+apiFetch('/api/students/batch', { method: 'POST', body: { ids } }) → apiFetch('/students/batch', { method: 'POST', body: { ids } })
+
+apiFetch(\/api/exams/${examId}`) → ``apiFetch(/exams/${examId}`)``
+
+apiFetch(\/api/exams/${exam._id}/results`, ...) → ``apiFetch(/exams/${exam._id}/results`, ...)``
+
+apiFetch(\/api/classes/${cls._id}/students`) → ``apiFetch(/classes/${cls._id}/students`)``
+
+apiFetch(\/api/exams/${examId}`) in other spots → ``apiFetch(/exams/${examId}`)``
+
+Example patch for the top loadExams() call:
+
+-    const resp = await apiFetch('/api/exams').catch(e => ({ ok:false }));
++    const resp = await apiFetch('/exams').catch(e => ({ ok:false }));
+
+
+And one of the other places:
+
+-    const classesResp = await apiFetch('/api/classes').catch(()=>null);
++    const classesResp = await apiFetch('/classes').catch(()=>null);

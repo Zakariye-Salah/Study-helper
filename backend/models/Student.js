@@ -1,0 +1,30 @@
+// backend/models/Student.js
+const mongoose = require('mongoose');
+
+const StudentSchema = new mongoose.Schema({
+  fullname: { type: String, required: true, trim: true },
+  numberId: { type: String, trim: true }, // uniqueness enforced per-school with compound index
+  classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
+  parentName: { type: String, trim: true },
+  parentPhone: { type: String, trim: true },
+  phone: { type: String, trim: true },
+  passwordHash: { type: String },
+  fee: { type: Number, default: 0 },
+  paidAmount: { type: Number, default: 0 },
+  status: { type: String, enum: ['free','unpaid','partial','paid'], default: 'unpaid' },
+  subjectIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Subject' }],
+  photo: { type: String }, // filename
+  schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+StudentSchema.index({ numberId: 1, schoolId: 1 }, { unique: true, partialFilterExpression: { numberId: { $exists: true } } });
+
+StudentSchema.pre('save', function(next){
+  this.updatedAt = new Date();
+  next();
+});
+
+module.exports = mongoose.model('Student', StudentSchema);

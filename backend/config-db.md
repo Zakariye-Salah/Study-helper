@@ -1,0 +1,1 @@
+Use MONGO_URI in .env. Connection handled in server.js for simplicity.

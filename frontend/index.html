@@ -1,0 +1,753 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>School Manager</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    /* Minimal professional responsive CSS (you can replace with your theme) */
+    :root{ --bg:#f8fafc; --card:#fff; --muted:#6b7280; --accent:#2563eb; --gap:12px; --radius:8px; font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif }
+    body{ margin:0; background:var(--bg); color:#0f172a; }
+    header.header{ display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:linear-gradient(90deg,#0ea5a8,#2563eb);color:#fff; position:sticky; top:0; z-index:40 }
+    .brand{ font-weight:700; font-size:18px }
+    nav{ display:flex; align-items:center; gap:12px }
+    .hamburger{ background:transparent;border:0;color:inherit;font-size:20px;display:none }
+    .nav{ list-style:none;margin:0;padding:0;display:flex;gap:8px;align-items:center }
+    .nav li{ padding:8px 12px;border-radius:6px; cursor:pointer }
+    .nav li:hover{ background:rgba(255,255,255,0.12) }
+    .container{ padding:16px; max-width:1100px;margin:18px auto; }
+    .page h2{ margin-top:0; display:flex; align-items:center; gap:10px }
+    .card{ background:var(--card); border-radius:8px; padding:12px; box-shadow:0 1px 3px rgba(2,6,23,0.06); margin-bottom:10px }
+    .btn{ background:var(--accent); color:#fff; border:0; padding:8px 10px; border-radius:6px; cursor:pointer }
+    input,select,textarea{ padding:8px;border-radius:6px;border:1px solid #e6eef8;width:100%;box-sizing:border-box;margin-top:6px;margin-bottom:8px }
+    .filters{ margin-bottom:10px }
+    .modal{ position:fixed; inset:0; background:rgba(2,6,23,0.4); display:flex; align-items:center; justify-content:center; z-index:80 }
+    .modal.hidden{ display:none }
+    .modal-dialog{ width:96%; max-width:720px; background:var(--card); border-radius:10px; padding:16px; position:relative }
+    .close{ position:absolute; right:8px; top:8px; background:#efefef;border:0;border-radius:50%; width:34px;height:34px; font-size:18px; cursor:pointer }
+    @media (max-width:900px){
+      .nav{ display:none; position:absolute; left:0; top:56px; background:#fff; width:100%; flex-direction:column; box-shadow:0 6px 20px rgba(2,6,23,0.08); }
+      .hamburger{ display:inline-block }
+      .nav.open{ display:flex }
+      header.header{ position:sticky; }
+    }
+    /* small helpers */
+    .muted{ color:var(--muted); font-size:13px }
+    
+  /* Basic utility-ish CSS to make the template look polished */
+  .card { background:#fff;
+    border-radius:10px;padding:12px;box-shadow:0 1px 2px rgba(0,0,0,0.06); }
+  .btn { background:#2563eb;color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer; }
+  .btn--outline { background:transparent;border:1px solid #d1d5db;color:#111;padding:6px 10px;border-radius:8px; }
+  .payments-card { width:100%; display:flex;flex-direction:column;align-items:start;padding:14px;border-radius:12px; }
+  @media(min-width:640px){ .payments-card { width:48%; } .payments-app { margin-top:20px; } .payments-detail{ display:block; } }
+  .payments-card__title { font-weight:700;font-size:18px;margin-bottom:6px; }
+  .payments-card__summary { color:#6b7280; font-size:14px; }
+  .chip { background:#eef2ff;padding:6px 10px;border-radius:999px;cursor:pointer;border:1px solid transparent;white-space:nowrap; }
+  .chip[aria-pressed="true"] { background:#c7d2fe;border-color:#6366f1; color:#111; font-weight:600; }
+  .status-badge { padding:4px 8px;border-radius:999px;font-weight:600;font-size:12px; }
+  .status-paid { background:#ecfdf5;color:#065f46; }
+  .status-partial { background:#fffbeb;color:#92400e; }
+  .status-unpaid { background:#fff1f2;color:#9f1239; }
+  .payments-row { display:flex;justify-content:space-between;align-items:center;padding:10px;border-radius:8px;margin-bottom:8px; }
+  .payments-row .meta { color:#6b7280;font-size:13px; }
+  .toast { position:fixed;right:12px;bottom:12px;background:#111;color:#fff;padding:10px 14px;border-radius:8px;box-shadow:0 6px 20px rgba(2,6,23,0.4); z-index:2000; }
+  .month-pill{ padding:6px 8px;border-radius:999px;border:1px solid #e5e7eb;margin:4px;display:inline-block;cursor:pointer; }
+  .month-pill[aria-pressed="true"]{ background:#e0e7ff;border-color:#6366f1;color:#111 }
+</style>
+</head>
+<body>
+  <header class="header">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="brand">Manager Study</div>
+    </div>
+    <nav>
+      <button id="hambtn" class="hamburger" aria-label="menu">☰</button>
+      <ul id="nav" class="nav">
+        <li data-route="dashboard" data-role="admin,manager">Dashboard</li>
+        <li data-route="students" data-role="admin,manager">Students</li>
+        <li data-route="teachers" data-role="admin,manager">Teachers</li>
+        <li data-route="subjects" data-role="admin,manager">Subjects</li>
+        <li data-route="classes" data-role="admin,manager">Classes</li>
+        <li data-route="parents" data-role="admin,manager">Parents</li>
+        <li data-route="attendance" data-role="teacher,manager,admin ,student,parent">Attendance</li>
+        <li data-route="profile" data-role="student,teacher,parent">Profile</li>
+        <li data-route="results" data-role="student,parent">Results</li>
+        <li data-route="finance" data-role="parent">Finance</li>
+        <li data-route="finance" data-role="parent">Finance</li>
+
+        <li data-route="chats" data-role="manager,teacher,student">Chats</li>
+        <li data-route="meetings" data-role="admin,manager,teacher,student ,parent">Meetings</li>
+        <li data-route="payments" data-role="admin,manager">Payments</li>
+        <li data-route="exams" data-role="admin,manager">Exams</li>
+        <li data-route="quizzes" data-role="admin,manager,teacher,student">Quizzes</li>
+        <li data-route="notices">Notices</li>
+        <li data-route="about">About</li>
+        <li data-route="user-management" data-role="admin">User Management</li>
+        <li data-route="vote"  data-role="admin,manager,teacher,student">Vote</li>
+        <li data-route="help"  data-role="admin,manager,teacher,student">Help</li>
+        <li data-route="login">Login</li>
+      </ul>
+    </nav>
+  </header>
+
+  <main id="app" class="container"></main>
+
+  <!-- Templates -->
+  <template id="tpl-finance">
+    <section class="page">
+      <h2>Finance</h2>
+
+      <div id="finance-root" style="max-width:1000px;margin:0 auto;padding:16px">
+        <div id="finance-header"></div>
+        <div id="finance-body" style="margin-top:12px"></div>
+      </div>
+    </section>
+  </template>
+<!-- Replace tpl-chats with this template -->
+<template id="tpl-chats">
+  <section class="page" style="padding:12px;max-width:1200px;margin:0 auto;">
+    <div style="display:flex;gap:12px;align-items:flex-start;">
+      <!-- Left: classes -->
+      <div id="chats-left" style="width:320px;min-width:260px;">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <h2 style="margin:0">Chats</h2>
+          <button id="chats-refresh" class="btn btn--outline">Refresh</button>
+        </div>
+        <div id="chats-classes" style="margin-top:12px"></div>
+
+        <div style="margin-top:12px">
+          <h4 style="margin:0 0 6px 0">My classes</h4>
+          <div id="chats-my-classes"></div>
+        </div>
+      </div>
+
+      <!-- Middle: single pane (messages / participants / media) -->
+      <div id="chats-middle" style="flex:1;display:flex;flex-direction:column;gap:8px;min-width:0;/*min-width to allow shrinking*/">
+
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <h3 id="chats-room-title" style="margin:0">Select a class</h3>
+            <div id="chats-room-sub" class="muted" style="font-size:13px"></div>
+          </div>
+          <div class="muted" id="chats-typing" style="font-size:13px"></div>
+        </div>
+
+        <!-- Content panes (only one visible at a time) -->
+        <div id="chats-content-pane" class="card" style="height:56vh; overflow:auto; padding:12px; background:#fff; display:flex;flex-direction:column;">
+          <div id="chats-messages-wrap" style="flex:1; overflow:auto;"></div>
+          <div id="chats-participants" style="flex:1; display:none; overflow:auto;"></div>
+          <div id="chats-media" style="flex:1; display:none; overflow:auto;"></div>
+        </div>
+
+        <!-- Input area (only for messages view) -->
+        <div id="chats-input-row" style="display:flex;gap:8px;align-items:center">
+          <input id="chats-input" placeholder="Write a message..." style="flex:1;padding:10px;border-radius:8px;border:1px solid #e5e7eb" />
+          <input id="chats-files" type="file" multiple style="display:none" />
+          <button id="chats-attach" class="btn btn--outline">Attach</button>
+          <button id="chats-send" class="btn">Send</button>
+        </div>
+
+        <div id="chats-send-feedback" class="muted" style="font-size:13px;min-height:20px"></div>
+      </div>
+    </div>
+
+    <!-- reaction popup -->
+    <div id="chats-react-popup" style="position:fixed;display:none;background:#fff;border-radius:8px;padding:8px;box-shadow:0 6px 24px rgba(2,6,23,0.12);z-index:4000">
+      <span class="react-emoji" style="cursor:pointer;padding:6px">😃</span>
+      <span class="react-emoji" style="cursor:pointer;padding:6px">👍</span>
+      <span class="react-emoji" style="cursor:pointer;padding:6px">❤️</span>
+      <span class="react-emoji" style="cursor:pointer;padding:6px">😔</span>
+      <span class="react-emoji" style="cursor:pointer;padding:6px">👎</span>
+      <span class="react-emoji" style="cursor:pointer;padding:6px">😡</span>
+    </div>
+
+    <!-- small animation style -->
+    <style>
+      .chat-message { transition: transform .12s ease, opacity .12s ease; }
+      .chat-message.enter { transform: translateY(8px); opacity: 0; animation: chatIn .18s forwards; }
+      @keyframes chatIn { to { transform: translateY(0); opacity:1 } }
+      .chat-message.deleted { opacity: 0.6; color:#666; text-decoration:line-through; }
+      #chats-messages-wrap img { max-width:100%; border-radius:6px; display:block; }
+      /* small pill for react badges */
+      .react-pill { display:inline-block;padding:4px 8px;border-radius:16px;background: #f3f4f6;margin-right:6px;font-size:13px; }
+    </style>
+  </section>
+</template>
+
+
+  
+<template id="tpl-dashboard">
+  <section class="page dashboard-page">
+    <div class="dash-header">
+      <div>
+        <h1 class="dash-title">Dashboard</h1>
+        <p class="dash-sub">Realtime &amp; historical payments • students • teachers</p>
+      </div>
+
+      <div class="dash-controls">
+        <label class="muted">Payments range</label>
+        <select id="dash-filter" class="select">
+          <option value="daily">Daily (today)</option>
+          <option value="weekly">Weekly (last 7 days)</option>
+          <option value="monthly" selected>Monthly (this month)</option>
+          <option value="yearly">Yearly (this year)</option>
+          <option value="live">Live (last 5 min)</option>
+          <option value="all">All time</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- spinner overlay -->
+    <div id="dash-spinner" class="dash-spinner" aria-hidden="true" style="display:none">
+      <div class="spinner" role="status" aria-label="Loading"></div>
+    </div>
+
+    <div id="dash-grid" class="dash-grid" aria-live="polite"></div>
+
+    <div class="dash-main">
+      <div class="dash-left">
+        <div class="card card-chart">
+          <div class="card-h">
+            <div>
+              <div class="muted">Payments</div>
+              <div id="dash-payments-paid" class="card-value card-value--payments">$0.00</div>
+            </div>
+            <div class="muted small">Total paid</div>
+          </div>
+          <div style="position:relative;height:220px">
+            <canvas id="paymentsChart"></canvas>
+          </div>
+        </div>
+
+        <div class="card card-top">
+          <h3>Top students (largest outstanding)</h3>
+          <div id="top-students" class="top-list"></div>
+        </div>
+      </div>
+
+      <div class="dash-right">
+        <div class="card stat-card stat-students">
+          <div class="muted">Total Students</div>
+          <div id="total-students" class="stat-large stat-large--students">0</div>
+        </div>
+        <div class="card stat-card stat-teachers">
+          <div class="muted">Total Teachers</div>
+          <div id="total-teachers" class="stat-large stat-large--teachers">0</div>
+        </div>
+        <div class="card stat-card stat-payments">
+          <div class="muted">Payments (count)</div>
+          <div id="payments-count" class="stat-large stat-large--payments">0</div>
+        </div>
+      </div>
+    </div>
+
+    <style>
+      :root{
+        --muted:#64748b;
+        --card-bg:#fff;
+        --shadow: 0 10px 30px rgba(2,6,23,0.06);
+        --accent-students-start:#2563eb; --accent-students-end:#60a5fa;
+        --accent-teachers-start:#10b981; --accent-teachers-end:#6ee7b7;
+        --accent-payments-start:#7c3aed; --accent-payments-end:#a78bfa;
+      }
+
+      /* container */
+      .dashboard-page {
+        max-width:1200px;
+        margin:18px auto;
+        padding:18px;
+        box-sizing:border-box;
+        font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+        color:#0f172a;
+      }
+
+      /* header */
+      .dash-header { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:12px; }
+      .dash-title { margin:0; font-size:20px; letter-spacing:-0.2px; }
+      .dash-sub { margin:0; color:var(--muted); font-size:13px; }
+
+      /* controls */
+      .dash-controls { display:flex; flex-direction:column; gap:6px; align-items:flex-end; }
+      .select { padding:8px 10px; border-radius:8px; border:1px solid #e6edf3; background:var(--card-bg); min-width:180px; box-shadow:none; font-size:13px; }
+
+      /* grid & cards */
+      .dash-grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap:12px; margin-bottom:16px; }
+      .card { background:var(--card-bg); border-radius:12px; padding:14px; box-shadow: var(--shadow); border:1px solid rgba(15,23,42,0.03); }
+      .card-h { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+      .muted { color:var(--muted); font-size:13px; }
+      .card-value { font-weight:700; font-size:22px; margin-top:6px; }
+      .card-value--payments { color: var(--accent-payments-start); }
+
+      /* layout */
+      .dash-main { display:flex; gap:12px; align-items:flex-start; }
+      .dash-left { flex:2; display:flex; flex-direction:column; gap:12px; min-width:0; }
+      .dash-right { flex:1; display:grid; grid-template-columns: 1fr; gap:12px; min-width:0; }
+
+      .card-chart { display:flex; flex-direction:column; gap:12px; }
+      .card-top h3 { margin:0 0 10px 0; font-size:16px; }
+      .top-list { display:flex; flex-direction:column; gap:8px; }
+      .top-item { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px; border-radius:8px; background:#fbfdff; border:1px solid rgba(15,23,42,0.03); }
+      .stat-large { font-size:20px; font-weight:700; margin-top:8px; }
+
+      /* accent bars */
+      .stat-card { position:relative; overflow:visible; padding-left:14px; }
+      .stat-card::before { content:""; position:absolute; left:0; top:0; bottom:0; width:6px; border-radius:6px; transform:translateX(-50%); }
+      .stat-students::before { background: linear-gradient(90deg,var(--accent-students-start),var(--accent-students-end)); box-shadow:0 6px 18px rgba(37,99,235,0.12); }
+      .stat-teachers::before { background: linear-gradient(90deg,var(--accent-teachers-start),var(--accent-teachers-end)); box-shadow:0 6px 18px rgba(16,185,129,0.12); }
+      .stat-payments::before { background: linear-gradient(90deg,var(--accent-payments-start),var(--accent-payments-end)); box-shadow:0 6px 18px rgba(124,58,237,0.12); }
+
+      /* number colors */
+      .stat-large--students { color: var(--accent-students-start); }
+      .stat-large--teachers { color: var(--accent-teachers-start); }
+      .stat-large--payments { color: var(--accent-payments-start); }
+
+      /* spinner overlay */
+      .dash-spinner { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background: rgba(255,255,255,0.6); z-index:1200; opacity:0; pointer-events:none; transition:opacity .18s ease; }
+      .dash-spinner[aria-hidden="false"] { opacity:1; pointer-events:auto; display:flex; }
+      .spinner { width:48px;height:48px;border-radius:50%;border:4px solid rgba(15,23,42,0.08); border-top-color: #2563eb; animation:spin .9s linear infinite; box-shadow:0 6px 18px rgba(37,99,235,0.08); }
+      @keyframes spin { to{ transform:rotate(360deg); } }
+
+      .small { font-size:12px; color:#94a3b8; }
+
+      /* ---------- MOBILE: single centered column and no left/right gutters ---------- */
+      @media (max-width:900px) {
+        .dashboard-page { padding:12px; max-width:940px; }
+        /* header: stack title + controls, place controls left so they use minimal vertical space */
+        .dash-header { flex-direction:column; align-items:flex-start; gap:10px; }
+        .dash-controls { order:0; align-items:flex-start; flex-direction:row; gap:8px; }
+
+        /* make main single column, center it and make content full width */
+        .dash-main { flex-direction:column; align-items:center; gap:12px; }
+        .dash-left, .dash-right { width:100%; max-width:100%; box-sizing:border-box; }
+        .dash-left { order:1; }
+        .dash-right { order:2; display:grid; grid-template-columns: repeat(2,1fr); gap:8px; width:100%; }
+
+        /* chart full width */
+        .card-chart { width:100%; }
+        .card-chart canvas { width:100% !important; height:auto !important; display:block; }
+
+        /* stat cards layout: two columns */
+        .stat-card { padding-left:12px; }
+        .stat-payments { grid-column: 1 / -1; } /* payments count spans full width under 2-col grid */
+
+        /* remove extra right whitespace by ensuring page has no horizontal overflow */
+        .dashboard-page { margin-left:auto; margin-right:auto; }
+      }
+
+      /* very small phones: single col stats */
+      @media (max-width:520px) {
+        .dash-right { grid-template-columns: 1fr 1fr; gap:8px; }
+        .stat-payments { grid-column: 1 / -1; } /* payments still full width */
+        .select { min-width:120px; }
+      }
+    </style>
+  </section>
+</template>
+
+
+
+
+
+
+
+
+  <template id="tpl-students">
+    <section class="page">
+      <h2>Students <button id="add-student-btn" class="btn">Add Student</button></h2>
+      <input id="student-search" placeholder="Search by name or id" />
+      <div id="students-list"></div>
+    </section>
+  </template>
+
+  <template id="tpl-teachers">
+    <section class="page">
+      <h2>Teachers <button id="add-teacher-btn" class="btn">Add Teacher</button></h2>
+      <input id="teacher-search" placeholder="Search by name or id" />
+      <div id="teachers-list"></div>
+    </section>
+  </template>
+
+  <template id="tpl-classes">
+    <section class="page">
+      <h2>Classes <button id="add-class-btn" class="btn">Add Class</button></h2>
+      <input id="class-search" placeholder="Search class name or id" />
+      <div id="classes-list"></div>
+    </section>
+  </template>
+
+
+  <template id="tpl-subjects">
+    <section class="page">
+      <h2>Subjects <button id="add-subject-btn" class="btn">Add Subject</button></h2>
+      <input id="subject-search" placeholder="Search subject name or id" />
+      <div id="subjects-list"></div>
+    </section>
+  </template>
+
+<!-- Parent management template -->
+<template id="tpl-parents">
+  <section class="page" style="padding:12px;max-width:980px;margin:0 auto;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+      <h2 style="margin:0">Parents</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="parent-search" placeholder="Search by parent name or student id" style="padding:8px;border-radius:6px;border:1px solid #ddd" />
+        <button id="add-parent-btn" class="btn" style="padding:8px 12px;border-radius:6px;cursor:pointer">Add Parent</button>
+      </div>
+    </div>
+
+    <!-- Add parent collapsible panel (hidden by default) -->
+    <div id="add-parent-panel" style="margin-top:12px;display:none;border:1px solid #e6e6e6;padding:12px;border-radius:8px;background:#fff;">
+      <h3 style="margin:0 0 8px 0">Add Parent</h3>
+      <form id="add-parent-form" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div style="display:flex;flex-direction:column">
+          <label for="parent-fullname" style="font-size:13px;margin-bottom:6px">Parent full name</label>
+          <input id="parent-fullname" name="fullname" required placeholder="e.g. Ahmed Ali" />
+        </div>
+
+        <div style="display:flex;flex-direction:column">
+          <label for="parent-phone" style="font-size:13px;margin-bottom:6px">Parent phone</label>
+          <input id="parent-phone" name="phone" placeholder="+252 61 2345678" />
+        </div>
+
+        <div style="display:flex;flex-direction:column">
+          <label for="parent-email" style="font-size:13px;margin-bottom:6px">Email (optional)</label>
+          <input id="parent-email" name="email" placeholder="parent@example.com" />
+        </div>
+
+        <div style="display:flex;flex-direction:column">
+          <label for="parent-password" style="font-size:13px;margin-bottom:6px">Password (for parent login)</label>
+          <input id="parent-password" name="password" type="password" required placeholder="Choose a password (min 6 chars)" />
+        </div>
+
+        <div style="display:flex;flex-direction:column">
+          <label for="parent-student-number" style="font-size:13px;margin-bottom:6px">Student numberId</label>
+          <input id="parent-student-number" name="studentNumberId" required placeholder="Enter student's numberId (e.g. STD0507)" />
+          <small class="muted" style="margin-top:6px;font-size:12px;color:#666">
+            If the student doesn't exist you'll get an error on submit.
+          </small>
+        </div>
+
+        <div style="grid-column: 1 / -1; display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
+          <button id="add-parent-cancel" type="button" class="btn btn--outline">Cancel</button>
+          <button id="add-parent-submit" type="submit" class="btn">Save Parent</button>
+        </div>
+      </form>
+      <div id="add-parent-feedback" style="margin-top:8px;font-size:13px;color:#d00;display:none"></div>
+    </div>
+
+    <!-- Parents list container -->
+    <div id="parents-list" style="margin-top:16px;display:grid;gap:10px">
+      <!-- Example empty state -->
+      <div id="parents-empty" class="muted" style="padding:12px;border-radius:8px;border:1px dashed #eee;background:#fafafa">
+        No parents yet. Click "Add Parent" to register a parent for a student.
+      </div>
+    </div>
+  </section>
+
+
+</template>
+
+<!-- Payments template -->
+<template id="tpl-payments">
+  <section class="page payments-page" aria-labelledby="payments-heading" style="padding:12px;max-width:1100px;margin:0 auto;">
+    <h2 id="payments-heading">Payments</h2>
+
+    <!-- Landing / mode switch -->
+    <div class="payments-landing" id="payments-landing" style="display:flex;gap:12px;flex-wrap:wrap;margin:10px 0">
+      <button class="card payments-card payments-card--students" id="payments-card-students" aria-pressed="false" aria-label="Students payments">
+        <div class="payments-card__title">Students</div>
+        <div class="payments-card__summary" id="payments-students-summary">Loading…</div>
+      </button>
+      <button class="card payments-card payments-card--teachers" id="payments-card-teachers" aria-pressed="false" aria-label="Teachers payments">
+        <div class="payments-card__title">Teachers</div>
+        <div class="payments-card__summary" id="payments-teachers-summary">Loading…</div>
+      </button>
+    </div>
+
+    <!-- Main app area (shows after selecting Students or Teachers) -->
+    <div id="payments-app" class="payments-app" style="display:none; margin-top:12px;">
+      <div class="payments-toolbar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <button id="payments-back" class="btn btn--outline" aria-label="Back to overview">Back</button>
+        <div style="flex:1;min-width:180px">
+          <input id="payments-search" type="search" placeholder="Search by name or ID…" aria-label="Search by name or ID" style="width:100%;padding:10px;border-radius:8px;border:1px solid #e5e7eb"/>
+        </div>
+        <div id="payments-role-actions" style="display:flex;gap:8px">
+          <!-- manager-only: Add custom payment type -->
+          <button id="add-payment-type-btn" class="btn" style="display:none">Manage types</button>
+        </div>
+      </div>
+
+      <!-- Filter chips -->
+      <div id="payments-chips" class="payments-chips" role="toolbar" aria-label="Filter by classes or departments" style="display:flex;gap:8px;overflow:auto;padding-bottom:8px">
+        <!-- chips inserted here -->
+      </div>
+
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <!-- Left: list -->
+        <div id="payments-list-wrap" style="flex:1;min-width:280px">
+          <div id="payments-list" aria-live="polite">Loading…</div>
+        </div>
+
+        <!-- Right: quick detail (desktop only) -->
+        <div id="payments-detail" style="width:320px;min-width:260px;display:none">
+          <div class="card" id="payments-detail-card">Select a person to see summary</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modals: markup container (app will inject modal content) -->
+    <div id="payments-modal-root" aria-hidden="true"></div>
+  </section>
+</template>
+<template id="tpl-tpl-zoom">
+  <section class="page zoom-page" aria-labelledby="payments-heading" style="padding:12px;max-width:1100px;margin:0 auto;">
+    <div id="zoom-app">
+      <div id="zoom-toolbar" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <button id="btn-toggle-audio" class="btn">Mute/Unmute</button>
+        <button id="btn-toggle-video" class="btn">Camera</button>
+        <button id="btn-share-screen" class="btn">Share Screen</button>
+        <button id="btn-mute-all" class="btn" style="display:none">Mute All (host)</button>
+        <div id="zoom-status" class="muted" style="margin-left:8px"></div>
+      </div>
+      <div id="videos" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+    </div>
+  </section>
+</template>
+
+
+
+  <template id="tpl-exams">
+    <section class="page">
+      <h2>Exams <button id="add-exam-btn" class="btn">Add Exam</button></h2>
+      <div id="exams-list"></div>
+    </section>
+  </template>
+
+  <template id="tpl-results">
+    <section class="page" style="padding:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <h2 id="results-title" style="margin:0">Results</h2>
+          <div id="results-sub" class="muted" style="font-size:13px">View student exam results</div>
+        </div>
+        <div id="results-controls" style="display:flex;gap:8px;align-items:center"></div>
+      </div>
+  
+      <div id="results-student-card" style="margin-top:12px"></div>
+  
+      <div id="results-list" style="margin-top:12px"></div>
+    </section>
+  </template>
+  
+  <template id="tpl-help">
+    <section class="page" style="padding:12px;max-width:1100px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2>Help / Support</h2>
+        <div>
+          <button id="btn-need-help" class="btn">Need Help</button>
+        </div>
+      </div>
+  
+      <div style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap">
+        <!-- Left: conversation area -->
+        <div style="flex:1;min-width:320px;">
+          <div class="card" id="help-conversation" style="height:60vh; overflow:auto; padding:12px;">
+            <div id="help-messages" style="display:flex;flex-direction:column;gap:8px"></div>
+          </div>
+  
+          <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+            <!-- manager-only container: JS will hide for non-managers -->
+            <div id="help-target-wrapper">
+              <select id="help-target-type" title="Send to" style="min-width:160px">
+                <option value="manager">To Manager</option>
+                <option value="student">To Students</option>
+                <option value="teacher">To Teachers</option>
+                <option value="">General</option>
+              </select>
+            </div>
+          </div>
+  
+          <div style="margin-top:8px">
+            <textarea id="help-text" rows="3" placeholder="Describe your problem..."></textarea>
+            <div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:6px">
+              <!-- private checkbox (visible to everyone) -->
+              <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="help-private-checkbox"/> Private (only managers will see)</label>
+              <button id="help-send-btn" class="btn">Send</button>
+            </div>
+          </div>
+        </div>
+  
+        <!-- Right: helpers panel -->
+        <div style="width:340px;min-width:260px;">
+          <div class="card">
+            <h3 style="margin:0">Help topics</h3>
+            <div id="help-topics" style="margin-top:8px"></div>
+          </div>
+  
+          <div class="card" style="margin-top:12px">
+            <h3 style="margin:0">Legend</h3>
+            <div class="muted" style="font-size:13px;margin-top:6px">Private messages are only visible to managers (and the sender/admin). Reactions and deletes are real-time.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </template>
+  
+  
+  <template id="tpl-quizzes">
+    <section class="page">
+      <h2>Quizzes <button id="add-quiz-btn" class="btn">Add Quiz</button></h2>
+      <div id="quizzes-list"></div>
+    </section>
+  </template>
+
+  <template id="tpl-reports">
+    <section class="page">
+      <h2>Reports</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="reports-filter">
+          <option value="monthly">Monthly</option>
+          <option value="yearly">Yearly</option>
+          <option value="all">All time</option>
+        </select>
+      </div>
+      <div id="reports-list"></div>
+    </section>
+  </template>
+
+  <template id="tpl-notices">
+    <section class="page">
+      <h2>Notices <button id="send-notice-btn" class="btn">Send Notice</button></h2>
+      <div id="notices-list"></div>
+    </section>
+  </template>
+
+  <template id="tpl-about">
+    <section class="page">
+      <h2>About</h2>
+      <div class="card"><div id="about-text" class="muted">(loading...)</div></div>
+    </section>
+  </template>
+
+  <template id="tpl-profile">
+    <section class="page" style="max-width:900px;margin:0 auto;padding:12px">
+      <h2>My Profile</h2>
+  
+      <div id="profile-card" class="card" style="display:flex;flex-direction:column;gap:12px;padding:16px">
+        <!-- Content populated by JS -->
+        <div id="profile-loading" class="muted">Loading profile...</div>
+      </div>
+  
+      <!-- <div style="margin-top:12px;display:flex;gap:8px">
+         <button id="edit-profile-btn" class="btn">Edit profile</button> 
+         <button id="change-password-btn" class="btn">Change password</button> 
+      </div> -->
+    </section>
+  </template>
+  
+  <template id="tpl-user-management">
+    <section class="page">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <h2>User Management</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="manager-search" placeholder="Search managers by name or email" style="padding:6px;border-radius:6px;border:1px solid #e5e7eb" />
+          <button id="create-manager-btn" class="btn">Create Manager</button>
+        </div>
+      </div>
+  
+      <div id="user-management-list" style="margin-top:12px"></div>
+  
+      <!-- optional pagination area -->
+      <div id="user-management-pager" style="margin-top:12px"></div>
+    </section>
+  </template>
+  <template id="tpl-attendance">
+    <section class="page" style="padding-bottom:24px">
+    <!-- Minimal attendance template: store this where tpl('attendance') reads from -->
+<div id="attendance-root" style="padding:12px;">
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+    <h2 style="margin:0">Attendance</h2>
+    <div style="margin-left:auto;display:flex;gap:8px">
+      <button id="att-view-cards" class="btn">Cards</button>
+      <button id="att-view-list" class="btn">List</button>
+    </div>
+  </div>
+
+  <div id="attendance-cards" style="display:block"></div>
+
+  <div id="attendance-controls" style="display:none;margin-top:12px">
+    <!-- optional list controls -->
+    <div style="display:flex;gap:8px;align-items:center">
+      <label>Class</label>
+      <select id="att-list-class"></select>
+      <label>Date</label>
+      <input id="att-list-date" type="date" value="">
+      <button id="att-list-refresh" class="btn">Refresh</button>
+    </div>
+  </div>
+
+  <div id="attendance-list" style="display:none;margin-top:12px"></div>
+
+  <div id="attendance-student-view" style="display:none;margin-top:12px"></div>
+</div>
+
+    </section>
+  </template>
+  
+  
+  <template id="tpl-vote">
+    <section class="page" style="padding:12px;">
+      <h2>Vote <button id="create-vote-btn" class="btn">Create Vote</button></h2>
+      <div id="vote-list"></div>
+    </section>
+  </template>
+  
+  <template id="tpl-login">
+    <section class="page auth">
+      <h2>Login</h2>
+      <form id="login-form">
+        <input name="email" placeholder="email" required />
+        <input name="password" type="password" placeholder="password" required />
+        <button type="submit" class="btn">Login</button>
+      </form>
+      <p style="margin-top:10px">No account? <a id="go-register" href="javascript:;">Register</a></p>
+    </section>
+  </template>
+
+  <template id="tpl-register">
+    <section class="page auth">
+      <h2>Register</h2>
+      <form id="register-form">
+        <input name="fullname" placeholder="Fullname" required />
+        <input name="email" placeholder="Email" required />
+        <input name="password" type="password" placeholder="Password" required />
+        <select name="role"><option value="manager">Manager</option><option value="teacher">Teacher</option><option value="student">Student</option></select>
+        <button type="submit" class="btn">Register</button>
+      </form>
+      <p style="margin-top:10px">Have account? <a id="go-login" href="javascript:;">Login</a></p>
+    </section>
+  </template>
+
+  <!-- Modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-dialog">
+      <button id="modal-close" class="close">×</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+  <!-- <script src="/socket.io/socket.io.js"></script> -->
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  
+  <script>'http://127.0.0.1:5000/api';</script>
+
+ <!-- <script src="http://localhost:5000/socket.io/socket.io.js"></script> -->
+
+
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
