@@ -1,0 +1,12 @@
+﻿node_modules/
+**/node_modules/
+backend/uploads/
+uploads/
+.env
+.DS_Store
+Thumb s.db
+logs
+*.log
+dist/
+build/
+.vscode/
