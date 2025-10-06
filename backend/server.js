@@ -67,18 +67,18 @@ const defaultDevOrigins = [
 ];
 const allowedOrigins = Array.from(new Set([ ...envOrigins, ...defaultDevOrigins ]));
 
-const corsOptions = {
-  origin: function(origin, cb) {
-    if (!origin) return cb(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1) return cb(null, true);
-    return cb(new Error('CORS origin denied: ' + origin));
-  },
-  credentials: true,
-  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept']
-};
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // respond to preflight
+// const corsOptions = {
+//   origin: function(origin, cb) {
+//     if (!origin) return cb(null, true);
+//     if (allowedOrigins.indexOf(origin) !== -1) return cb(null, true);
+//     return cb(new Error('CORS origin denied: ' + origin));
+//   },
+//   credentials: true,
+//   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+//   allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept']
+// };
+// app.use(cors(corsOptions));
+// app.options('*', cors(corsOptions)); // respond to preflight
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -123,16 +123,16 @@ app.use('/api/math-game', gamesRouter);
 app.get('/', (req, res) => res.json({ ok:true, message:'School Manager API' }));
 
 // global error handler
-app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err && (err.stack || err));
-  if (!res.headersSent) {
-    if (err && String(err.message || '').toLowerCase().includes('cors')) {
-      return res.status(403).json({ ok:false, error: 'CORS error: ' + err.message });
-    }
-    return res.status(500).json({ ok:false, error: err && err.message ? err.message : 'Server error' });
-  }
-  next(err);
-});
+// app.use((err, req, res, next) => {
+//   console.error('Unhandled error:', err && (err.stack || err));
+//   if (!res.headersSent) {
+//     if (err && String(err.message || '').toLowerCase().includes('cors')) {
+//       return res.status(403).json({ ok:false, error: 'CORS error: ' + err.message });
+//     }
+//     return res.status(500).json({ ok:false, error: err && err.message ? err.message : 'Server error' });
+//   }
+//   next(err);
+// });
 
 // connect mongodb
 const PORT = Number(process.env.PORT || 5000);
@@ -142,12 +142,63 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .catch(err => console.error('MongoDB connect error', err));
 
 // create server + socket.io (unchanged)
-const server = http.createServer(app);
-const { Server } = require('socket.io');
+// const server = http.createServer(app);
+// const { Server } = require('socket.io');
+// const io = new Server(server, {
+//   cors: { origin: allowedOrigins, methods: ['GET','POST'], credentials: true },
+//   pingInterval: 25000, pingTimeout: 60000
+// });
+
+// allow Netlify preview domains in addition to configured origins
+const netlifyPreviewRegex = /\.netlify\.app$/i;
+
+// Log incoming origin for easier debugging (optional; can remove later)
+app.use((req, res, next) => {
+  if (req.headers && req.headers.origin) {
+    console.log('Incoming request Origin:', req.headers.origin, 'Path:', req.path);
+  }
+  next();
+});
+
+const corsOptions = {
+  origin: function(origin, cb) {
+    // allow non-browser requests (curl, server-to-server, tests) where origin is undefined
+    if (!origin) return cb(null, true);
+
+    // exact-list match from env + defaults
+    if (allowedOrigins.indexOf(origin) !== -1) return cb(null, true);
+
+    // allow Netlify preview / deploy domains (e.g. *.netlify.app)
+    if (netlifyPreviewRegex.test(origin)) return cb(null, true);
+
+    // otherwise deny
+    console.warn('CORS denied for origin:', origin);
+    return cb(new Error('CORS origin denied: ' + origin));
+  },
+  credentials: true,
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept']
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // respond to preflight
+
+// Create Socket.IO with same origin rules (function-based)
 const io = new Server(server, {
-  cors: { origin: allowedOrigins, methods: ['GET','POST'], credentials: true },
+  cors: {
+    origin: function(origin, cb) {
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.indexOf(origin) !== -1) return cb(null, true);
+      if (netlifyPreviewRegex.test(origin)) return cb(null, true);
+      console.warn('Socket.IO CORS denied for origin:', origin);
+      return cb('origin not allowed', false);
+    },
+    methods: ['GET','POST'],
+    credentials: true
+  },
   pingInterval: 25000, pingTimeout: 60000
 });
+
 app.set('io', io);
 
 // socket auth and events (same as your existing code)
