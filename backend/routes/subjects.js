@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
 const roles = require('../middleware/roles');
+const mongoose = require('mongoose');
 const Subject = require('../models/Subject');
 
 // helper to generate subjectId like SUBDDMMn
@@ -11,7 +12,7 @@ async function generateSubjectId(schoolId) {
   const dd = String(now.getDate()).padStart(2, '0');
   const mm = String(now.getMonth() + 1).padStart(2, '0');
   const prefix = `SUB${dd}${mm}`;
-  const last = await Subject.findOne({ schoolId, subjectId: new RegExp(`^${prefix}`) }).sort({ createdAt: -1 }).lean();
+  const last = await Subject.findOne({ schoolId, subjectId: new RegExp(`^${prefix}`), deleted: { $ne: true } }).sort({ createdAt: -1 }).lean();
   if (!last || !last.subjectId) return `${prefix}1`;
   const tail = last.subjectId.replace(prefix, '');
   const seq = Number(tail) || 0;
@@ -32,8 +33,8 @@ router.post('/', auth, roles(['admin','manager']), async (req,res)=>{
       subjectId = String(subjectId).trim();
     }
 
-    // ensure unique for this creator/school
-    const qExist = { subjectId, schoolId: req.user.schoolId };
+    // ensure unique for this school (ignore deleted)
+    const qExist = { subjectId, schoolId: req.user.schoolId, deleted: { $ne: true } };
     const existing = await Subject.findOne(qExist);
     if(existing) return res.status(400).json({ message: 'subjectId exists for this school' });
 
@@ -50,19 +51,21 @@ router.post('/', auth, roles(['admin','manager']), async (req,res)=>{
 router.get('/', auth, roles(['admin','manager','teacher','student']), async (req,res)=>{
   try{
     const { search = '', page = 1, limit = 50 } = req.query;
-    const q = {};
+    const p = Math.max(1, parseInt(page || 1, 10));
+    const l = Math.max(1, Math.min(500, parseInt(limit || 50, 10)));
+    const q = { deleted: { $ne: true } };
     if(search) q.$or = [{ name: new RegExp(search,'i') }, { subjectId: new RegExp(search,'i') }];
 
     // visibility:
     // - students/teachers: see school-level subjects
-    // - admin/manager: only their created subjects (you requested isolation between managers)
+    // - admin/manager: only their created subjects (isolation between managers)
     if (['student','teacher'].includes(req.user.role)) {
       q.schoolId = req.user.schoolId;
     } else {
       q.createdBy = req.user._id;
     }
 
-    const items = await Subject.find(q).limit(parseInt(limit)).skip((page-1)*limit).sort({ createdAt:-1 }).lean();
+    const items = await Subject.find(q).limit(l).skip((p-1)*l).sort({ createdAt:-1 }).lean();
     const total = await Subject.countDocuments(q);
     res.json({ items, total });
   }catch(err){
@@ -72,40 +75,52 @@ router.get('/', auth, roles(['admin','manager','teacher','student']), async (req
 });
 
 // Update (owner-only)
-router.put('/:id', auth, roles(['admin','manager']), async (req,res)=>{ 
+router.put('/:id', auth, roles(['admin','manager']), async (req,res)=>{
   try{
     const id = req.params.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+
     const doc = await Subject.findById(id);
-    if(!doc) return res.status(404).json({ message:'Not found' });
+    if(!doc || doc.deleted) return res.status(404).json({ message:'Not found' });
     if (String(doc.createdBy) !== String(req.user._id)) return res.status(403).json({ message:'Forbidden' });
 
     // if subjectId provided, ensure uniqueness within the same school
     if (req.body.subjectId && String(req.body.subjectId).trim() !== doc.subjectId) {
-      const exists = await Subject.findOne({ subjectId: String(req.body.subjectId).trim(), schoolId: req.user.schoolId });
+      const exists = await Subject.findOne({ subjectId: String(req.body.subjectId).trim(), schoolId: req.user.schoolId, deleted: { $ne: true } });
       if (exists) return res.status(400).json({ message: 'subjectId already exists for this school' });
     }
 
-    const s = await Subject.findByIdAndUpdate(id, req.body, { new:true });
+    const s = await Subject.findByIdAndUpdate(id, req.body, { new:true }).lean();
     res.json(s);
   }catch(err){
     console.error('PUT /subjects/:id error', err);
     res.status(500).json({ message: 'Server error' });
-  }  
+  }
 });
 
-// Delete (owner-only)
-router.delete('/:id', auth, roles(['admin','manager']), async (req,res)=>{ 
+// Delete (soft-delete owner-only)
+router.delete('/:id', auth, roles(['admin','manager']), async (req,res)=>{
   try{
     const id = req.params.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+
     const doc = await Subject.findById(id);
     if(!doc) return res.json({ ok:true });
+    if (doc.deleted) return res.json({ ok:true, alreadyDeleted:true });
+
     if (String(doc.createdBy) !== String(req.user._id)) return res.status(403).json({ message:'Forbidden' });
-    await Subject.findByIdAndDelete(id);
-    res.json({ ok:true });
+
+    doc.deleted = true;
+    doc.deletedAt = new Date();
+    doc.deletedBy = { id: req.user._id, role: req.user.role, name: (req.user.fullname || req.user.name || '') };
+    await doc.save();
+
+    // permanent cleanup (removing references) is handled by recycle permanent-delete/purge job
+    res.json({ ok:true, deleted: 'soft' });
   }catch(err){
     console.error('DELETE /subjects/:id error', err);
     res.status(500).json({ message: 'Server error' });
-  }  
+  }
 });
 
 module.exports = router;

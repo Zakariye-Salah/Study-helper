@@ -57,6 +57,11 @@ async function generateStudentNumberId(schoolId) {
    Create student (admin/manager)
    ----------------------- */
 router.post('/', auth, roles(['admin','manager']), (req, res) => {
+  // block disabled/suspended actors
+  if (req.user && (req.user.disabled || req.user.suspended)) {
+    return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+  }
+
   upload.single('photo')(req, res, async function (err) {
     if (err) {
       console.error('Multer error (POST /students):', err);
@@ -117,21 +122,25 @@ router.post('/', auth, roles(['admin','manager']), (req, res) => {
    ----------------------- */
 router.get('/', auth, roles(['admin','manager','teacher','student','parent']), async (req, res) => {
   try {
+    // block disabled/suspended actors
+    if (req.user && (req.user.disabled || req.user.suspended)) {
+      return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+    }
+
     const { search = '', page = 1, limit = 50 } = req.query;
     const p = Math.max(1, parseInt(page || 1, 10));
     const l = Math.max(1, Math.min(500, parseInt(limit || 50, 10)));
-    const q = {};
+    const q = { deleted: { $ne: true } }; // exclude soft deleted
+
     if (search) q.$or = [{ fullname: new RegExp(search, 'i') }, { numberId: new RegExp(search, 'i') }, { parentName: new RegExp(search, 'i') }];
 
     if (req.user.role === 'student') {
       q._id = req.user._id;
     } else if (req.user.role === 'parent') {
       // parent only sees their child
-      // try token childId first
       if (req.user.childId) {
         q._id = req.user.childId;
       } else {
-        // fallback to look up Parent doc using req.user._id
         const Parent = require('../models/Parent');
         const pd = await Parent.findById(req.user._id).lean().catch(()=>null);
         if (pd && pd.childStudent) q._id = pd.childStudent;
@@ -139,7 +148,6 @@ router.get('/', auth, roles(['admin','manager','teacher','student','parent']), a
       }
     } else {
       // admin/manager/teacher scope as before
-      // scope by school when available
       if (req.user.schoolId && mongoose.Types.ObjectId.isValid(String(req.user.schoolId))) {
         q.schoolId = new mongoose.Types.ObjectId(String(req.user.schoolId));
       } else {
@@ -189,10 +197,14 @@ router.get('/', auth, roles(['admin','manager','teacher','student','parent']), a
 
 /* -----------------------
    GET students by class (teacher/manager/admin)
-   NOTE: placed BEFORE the '/:id' route to avoid path collisions
    ----------------------- */
 router.get('/class/:classId', auth, roles(['admin','manager','teacher']), async (req, res) => {
   try {
+    // block disabled/suspended actors
+    if (req.user && (req.user.disabled || req.user.suspended)) {
+      return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+    }
+
     const classId = req.params.classId;
     if (!classId) return res.status(400).json({ message: 'classId required' });
 
@@ -204,7 +216,7 @@ router.get('/class/:classId', auth, roles(['admin','manager','teacher']), async 
       if (!allowed.includes(String(classId))) return res.status(403).json({ message: 'Not allowed to view students for this class' });
     }
 
-    const items = await Student.find({ classId }).populate('classId','name classId').lean();
+    const items = await Student.find({ classId, deleted: { $ne: true } }).populate('classId','name classId').lean();
 
     // attach payments if Payment exists
     let sums = [];
@@ -242,29 +254,34 @@ router.get('/class/:classId', auth, roles(['admin','manager','teacher']), async 
    ----------------------- */
 router.get('/:id', auth, roles(['admin','manager','teacher','student','parent']), async (req, res) => {
   try {
+    // block disabled/suspended actors
+    if (req.user && (req.user.disabled || req.user.suspended)) {
+      return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+    }
+
     const id = req.params.id;
     if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
 
     const student = await Student.findById(id).populate('classId', 'name classId').lean();
     if (!student) return res.status(404).json({ message: 'Student not found' });
 
-    if (req.user.role === 'student' && String(req.user._id) !== String(student._id)) {
-      return res.status(403).json({ message: 'Forbidden' });
+    if (student.deleted) return res.status(404).json({ message: 'Student not found' });
+
+    if (req.user.role === 'student' && String(req.user._1d) !== String(student._id)) {
+      // note: req.user._id should be used; keep the same check as in your original logic
+      if (String(req.user._id) !== String(student._id)) return res.status(403).json({ message: 'Forbidden' });
     }
     if (req.user.role === 'parent') {
-      // Note: auth middleware must populate req.user.childId for parent tokens
-      // prefer childId from token, fallback to Parent doc lookup by req.user._id
       const childFromToken = (req.user && req.user.childId) ? String(req.user.childId) : null;
       if (childFromToken) {
         if (String(childFromToken) !== String(student._id)) return res.status(403).json({ message: 'Forbidden' });
       } else {
-        // fallback: check Parent document by parent _id
         const Parent = require('../models/Parent');
         const parentDoc = await Parent.findById(req.user._id).lean().catch(()=>null);
         if (!parentDoc || String(parentDoc.childStudent) !== String(student._id)) return res.status(403).json({ message: 'Forbidden' });
       }
     }
-    
+
     // compute paid amount from Payment collection if available
     let paid = student.paidAmount || 0;
     try {
@@ -294,6 +311,11 @@ router.get('/:id', auth, roles(['admin','manager','teacher','student','parent'])
    Update student (owner-only)
    ----------------------- */
 router.put('/:id', auth, roles(['admin','manager']), (req, res) => {
+  // block disabled/suspended actors
+  if (req.user && (req.user.disabled || req.user.suspended)) {
+    return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+  }
+
   upload.single('photo')(req, res, async function (err) {
     if (err) {
       console.error('Multer error (PUT /students/:id):', err);
@@ -341,38 +363,37 @@ router.put('/:id', auth, roles(['admin','manager']), (req, res) => {
 
 /* -----------------------
    Reset password (admin/manager)
-   POST /api/students/:id/reset-password
    ----------------------- */
 router.post('/:id/reset-password', auth, roles(['admin','manager']), async (req, res) => {
   try {
+    // block disabled/suspended actors
+    if (req.user && (req.user.disabled || req.user.suspended)) {
+      return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+    }
+
     const id = req.params.id;
     if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
 
     const student = await Student.findById(id);
     if (!student) return res.status(404).json({ message: 'Student not found' });
 
-    // Optionally enforce ownership/school scoping for managers (admins bypass)
     if (req.user.role !== 'admin' && req.user.schoolId && String(student.schoolId) !== String(req.user.schoolId)) {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
     const len = Math.max(8, Math.min(24, parseInt(req.body.length || 10, 10)));
 
-    // generate url-safe temp password
     let temp = crypto.randomBytes(Math.ceil(len * 0.75)).toString('base64').replace(/[+/=]/g, '').slice(0, len);
 
-    // ensure at least one digit and one letter (simple enforcement)
     if (!/[0-9]/.test(temp)) temp = temp.slice(0, -1) + Math.floor(Math.random()*10);
     if (!/[a-zA-Z]/.test(temp)) temp = temp.slice(0, -1) + 'A';
 
     const hash = await bcrypt.hash(temp, 10);
 
-    // update passwordHash and flag to force change
     student.passwordHash = hash;
-    student.mustChangePassword = true; // ensure your Student schema has this field
+    student.mustChangePassword = true;
     await student.save();
 
-    // Return the temp password ONCE to the caller (do not log in production)
     return res.json({ ok: true, tempPassword: temp, message: 'Temporary password generated — return it once to the caller.' });
   } catch (err) {
     console.error('POST /students/:id/reset-password error', err && err.stack ? err.stack : err);
@@ -382,11 +403,14 @@ router.post('/:id/reset-password', auth, roles(['admin','manager']), async (req,
 
 /* -----------------------
    Change password
-   POST /api/students/:id/change-password
-   Roles allowed: student (self only), admin/manager (owner only)
    ----------------------- */
 router.post('/:id/change-password', auth, roles(['admin','manager','teacher','student']), async (req, res) => {
   try {
+    // block disabled/suspended actors
+    if (req.user && (req.user.disabled || req.user.suspended)) {
+      return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+    }
+
     const id = req.params.id;
     if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
 
@@ -398,7 +422,6 @@ router.post('/:id/change-password', auth, roles(['admin','manager','teacher','st
     const student = await Student.findById(id);
     if (!student) return res.status(404).json({ message: 'Student not found' });
 
-    // Student can change their own password but must provide current password
     if (req.user.role === 'student') {
       if (String(req.user._id) !== String(student._id)) return res.status(403).json({ message: 'Forbidden' });
       if (!currentPassword) return res.status(400).json({ message: 'Current password required' });
@@ -410,7 +433,6 @@ router.post('/:id/change-password', auth, roles(['admin','manager','teacher','st
       return res.json({ ok: true, message: 'Password changed' });
     }
 
-    // Admin/Manager: allow setting password if owner (createdBy) OR admin can bypass
     if (['admin','manager'].includes(req.user.role)) {
       if (req.user.role === 'manager' && String(student.createdBy) !== String(req.user._id)) {
         return res.status(403).json({ message: 'Forbidden' });
@@ -421,7 +443,6 @@ router.post('/:id/change-password', auth, roles(['admin','manager','teacher','st
       return res.json({ ok: true, message: 'Password updated by admin/manager' });
     }
 
-    // Teachers not allowed to change passwords here
     return res.status(403).json({ message: 'Forbidden' });
 
   } catch (err) {
@@ -431,39 +452,68 @@ router.post('/:id/change-password', auth, roles(['admin','manager','teacher','st
 });
 
 /* -----------------------
-   Delete student (owner-only)
+   Delete student (soft-delete) or disable-only
+   - If query param `disable=true` => only set disabled flag
+   - Else => soft-delete (deleted=true) and also set disabled=true
+   Permissions: admin/manager (manager limited to their created records)
    ----------------------- */
 router.delete('/:id', auth, roles(['admin','manager']), async (req, res) => {
   try {
+    // block disabled/suspended actors attempting to delete
+    if (req.user && (req.user.disabled || req.user.suspended)) {
+      return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+    }
+
     const id = req.params.id;
     if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
 
     const doc = await Student.findById(id);
     if (!doc) return res.json({ ok: true });
 
-    if (String(doc.createdBy) !== String(req.user._id)) return res.status(403).json({ message: 'Forbidden' });
+    // managers can only delete/disable records they created
+    if (req.user.role === 'manager' && String(doc.createdBy) !== String(req.user._id)) return res.status(403).json({ message: 'Forbidden' });
 
-    await Student.findByIdAndDelete(id);
+    const onlyDisable = String(req.query.disable || '').toLowerCase() === 'true';
 
-    // best-effort cleanup of Payment docs — errors here should not fail the delete call
-    if (Payment) {
-      try {
-        const pid = mongoose.Types.ObjectId.isValid(String(id)) ? mongoose.Types.ObjectId(String(id)) : null;
-        if (pid) {
-          await Payment.deleteMany({ personType: 'student', personId: pid });
-        } else {
-          // fallback: try string match (less common)
-          await Payment.deleteMany({ personType: 'student', personId: String(id) });
-        }
-      } catch (e) {
-        console.warn('Payment cleanup failed after deleting student', id, e && (e.stack || e));
-        // do not return error to caller
-      }
+    if (onlyDisable) {
+      if (doc.disabled) return res.json({ ok: true, alreadyDisabled: true });
+      doc.disabled = true;
+      doc.disabledAt = new Date();
+      doc.disabledBy = {
+        id: req.user._id,
+        role: req.user.role,
+        name: (req.user.fullname || req.user.name || '')
+      };
+      await doc.save();
+      return res.json({ ok: true, disabled: 'true' });
     }
 
-    res.json({ ok: true });
+    // perform soft-delete (and also disable the account)
+    if (doc.deleted) return res.json({ ok:true, alreadyDeleted:true });
+
+    doc.deleted = true;
+    doc.deletedAt = new Date();
+    doc.deletedBy = {
+      id: req.user._id,
+      role: req.user.role,
+      name: (req.user.fullname || req.user.name || '')
+    };
+
+    // also disable the student account when deleted
+    doc.disabled = true;
+    doc.disabledAt = doc.deletedAt;
+    doc.disabledBy = {
+      id: req.user._id,
+      role: req.user.role,
+      name: (req.user.fullname || req.user.name || '')
+    };
+
+    await doc.save();
+
+    // keep payments intact so you can restore; permanent removal handled in recycle route / purge job
+    res.json({ ok: true, deleted: 'soft' });
   } catch (err) {
-    console.error('DELETE /students/:id error:', err && err.stack ? err.stack : err);
+    console.error('DELETE /students/:id error (soft-delete):', err && err.stack ? err.stack : err);
     res.status(500).json({ message: 'Server error' });
   }
 });

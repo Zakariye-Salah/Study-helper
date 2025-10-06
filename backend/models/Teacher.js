@@ -1,18 +1,27 @@
-// backend/models/Teacher.js
+ // backend/models/Teacher.js
 const mongoose = require('mongoose');
 
 const TeacherSchema = new mongoose.Schema({
   fullname: { type: String, required: true },
   numberId: { type: String }, // unique per-school via compound index
   classIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Class' }],
-  subjectIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Subject' }], // <- added
+  subjectIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Subject' }],
   phone: String,
-  salary: { type: Number, default: 0 }, // <- added
+  salary: { type: Number, default: 0 },
   photo: String, // filename of uploaded image (optional)
   passwordHash: String,
   schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
+
+  // soft-delete metadata
+  deleted: { type: Boolean, default: false },
+  deletedAt: { type: Date, default: null },
+  deletedBy: {
+    id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    role: { type: String, default: null },
+    name: { type: String, default: null }
+  }
 });
 
 // unique numberId per school

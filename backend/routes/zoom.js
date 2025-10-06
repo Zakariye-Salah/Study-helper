@@ -73,17 +73,23 @@ async function resolveOwnerFullname(ownerId) {
   return ownerIdStr || null;
 }
 
-/* GET /api/zoom - list meetings (scoped by role)
-   Returns meetings populated with class objects and ownerFullname resolved safely.
-*/
+/* GET /api/zoom - list meetings (scoped by role) */
 router.get('/', auth, async (req, res) => {
   try {
     const role = (req.user.role || '').toLowerCase();
     const q = {};
 
     if (role === 'teacher') {
+      // teacher: only their own meetings
       q.$or = [{ ownerId: req.user._id }];
+    } else if (role === 'manager') {
+      // manager: only meetings they created, AND meetings created by teachers
+      q.$or = [
+        { ownerId: req.user._id },
+        { ownerType: 'teacher' }
+      ];
     } else if (role === 'student') {
+      // student logic unchanged
       const Student = require('../models/Student');
       const s = await Student.findById(req.user._id).lean();
       if (!s) return res.json({ items: [] });
@@ -103,24 +109,21 @@ router.get('/', auth, async (req, res) => {
       if (orClauses.length === 0) return res.json({ items: [] });
       q.$or = orClauses;
     } else {
-      // manager/admin - no extra filters
+      // admin/system -> no filter (see all)
     }
 
     if (q.$or && (!Array.isArray(q.$or) || q.$or.length === 0)) delete q.$or;
 
-    // populate only class info (safe)
     let items = await Meeting.find(q)
       .sort({ startsAt: 1, createdAt: -1 })
       .populate({ path: 'classIds', select: 'name classId' })
       .lean();
 
-    // resolve ownerFullname for each meeting safely (do not rely on ownerType reference names)
     for (const m of items) {
       try {
         m.ownerFullname = await resolveOwnerFullname(m.ownerId);
       } catch (e) {
         m.ownerFullname = m.ownerId ? String(m.ownerId) : null;
-        console.warn('owner resolution failed for meeting', m._id, e && e.message ? e.message : e);
       }
     }
 
@@ -182,7 +185,9 @@ router.post('/', auth, roles(['teacher','manager','admin']), async (req, res) =>
   }
 });
 
-/* GET single meeting by meetingId or _id */
+
+
+/* GET single meeting by meetingId or _id (with visibility check) */
 router.get('/:id', auth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -195,6 +200,30 @@ router.get('/:id', auth, async (req, res) => {
         .lean();
     }
     if (!m) return res.status(404).json({ message: 'Not found' });
+
+    // permission: admins always allowed
+    const role = (req.user.role || '').toLowerCase();
+    let allowed = false;
+    if (role === 'admin') allowed = true;
+    else if (role === 'manager') {
+      // manager: own meetings OR meetings created by teachers
+      if (String(m.ownerId) === String(req.user._id) || String(m.ownerType) === 'teacher') allowed = true;
+    } else if (role === 'teacher') {
+      // teacher: only own meetings
+      if (String(m.ownerId) === String(req.user._id)) allowed = true;
+    } else if (role === 'student') {
+      const Student = require('../models/Student');
+      const s = await Student.findById(req.user._id).lean();
+      if (s) {
+        const classId = s.classId ? String(s.classId) : null;
+        const allowedByClass = Array.isArray(m.classIds) && m.classIds.some(cid => String(cid) === classId);
+        const allowedByStudent = Array.isArray(m.studentIds) && m.studentIds.some(sid => String(sid) === String(req.user._id));
+        if (allowedByClass || allowedByStudent) allowed = true;
+      }
+    }
+
+    if (!allowed) return res.status(403).json({ message: 'Forbidden' });
+
     m.ownerFullname = await resolveOwnerFullname(m.ownerId);
     res.json({ meeting: m });
   } catch (err) {
@@ -204,8 +233,7 @@ router.get('/:id', auth, async (req, res) => {
   }
 });
 
-/* DELETE /api/zoom/:id - delete meeting (owner, manager, admin) */
-/* DELETE /api/zoom/:id - delete meeting (owner, manager, admin) */
+/* DELETE /api/zoom/:id - delete meeting (owner or admin only) */
 router.delete('/:id', auth, roles(['teacher','manager','admin']), async (req, res) => {
   try {
     const id = req.params.id;
@@ -214,14 +242,15 @@ router.delete('/:id', auth, roles(['teacher','manager','admin']), async (req, re
     if (!meeting) return res.status(404).json({ message: 'Meeting not found' });
 
     const role = (req.user.role || '').toLowerCase();
-    if (String(meeting.ownerId) !== String(req.user._id) && !['admin','manager'].includes(role)) {
+    // Only owner or admin can delete. Managers are not allowed to delete other managers' meetings.
+    if (String(meeting.ownerId) !== String(req.user._id) && role !== 'admin') {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
     const meetingIdValue = meeting.meetingId;
     await Meeting.deleteOne({ _id: meeting._id });
 
-    // --- audit log for meeting deletion (non-fatal) ---
+    // audit + socket emission unchanged (kept from your original code)
     try {
       const MeetingAudit = require('../models/MeetingAudit');
       const byUserId = (mongoose.Types.ObjectId.isValid(String(req.user._id)) ? new mongoose.Types.ObjectId(String(req.user._id)) : null);
@@ -236,7 +265,6 @@ router.delete('/:id', auth, roles(['teacher','manager','admin']), async (req, re
     } catch (e) {
       console.warn('Failed to write meeting-deleted audit', e);
     }
-    // ----------------------------------------------------
 
     try {
       const io = req.app && req.app.get && req.app.get('io');
@@ -262,8 +290,7 @@ router.delete('/:id', auth, roles(['teacher','manager','admin']), async (req, re
   }
 });
 
-
-/* GET /api/zoom/:id/can-join */
+/* GET /api/zoom/:id/can-join (visibility aligned with list rules) */
 router.get('/:id/can-join', auth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -272,7 +299,13 @@ router.get('/:id/can-join', auth, async (req, res) => {
     if (!meeting) return res.status(404).json({ message: 'Meeting not found' });
 
     const role = (req.user.role || '').toLowerCase();
-    if (role === 'manager' || role === 'admin') return res.json({ ok: true });
+    if (role === 'admin') return res.json({ ok: true });
+
+    if (role === 'manager') {
+      // manager can join their own meeting OR any meeting created by teachers
+      if (String(meeting.ownerId) === String(req.user._id) || String(meeting.ownerType) === 'teacher') return res.json({ ok: true });
+      return res.status(403).json({ message: 'Forbidden' });
+    }
 
     if (role === 'teacher') {
       if (String(meeting.ownerId) === String(req.user._id)) return res.json({ ok: true });

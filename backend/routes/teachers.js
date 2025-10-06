@@ -3,11 +3,12 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const auth = require('../middleware/auth');
+const crypto = require('crypto');
+const bcrypt = require('bcrypt');
 const roles = require('../middleware/roles');
 const Teacher = require('../models/Teacher');
 let Payment;
 try { Payment = require('../models/Payment'); } catch (e) { Payment = null; console.warn('Payment model not available for teachers route:', e.message); }
-const bcrypt = require('bcrypt');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -40,6 +41,9 @@ async function generateTeacherNumberId(schoolId) {
 // Create teacher (admin/manager)
 router.post('/', auth, roles(['admin','manager']), upload.single('photo'), async (req,res) => {
   try {
+    // extra defensive user state checks
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+
     const body = req.body || {};
     const { fullname, numberId, classIds = [], phone, password, salary, subjectIds = [] } = body;
     if (!fullname) return res.status(400).json({ message: 'fullname required' });
@@ -71,7 +75,6 @@ router.post('/', auth, roles(['admin','manager']), upload.single('photo'), async
 
     await t.save();
 
-    // return populated minimal info
     const ret = await Teacher.findById(t._id).populate('classIds','name classId').populate('subjectIds','name subjectId').lean();
     if (ret.photo) ret.photoUrl = `/uploads/${ret.photo}`;
     res.json(ret);
@@ -85,10 +88,12 @@ router.post('/', auth, roles(['admin','manager']), upload.single('photo'), async
 // List teachers (owner-only). Teachers see only themselves.
 router.get('/', auth, roles(['admin','manager','teacher']), async (req,res) => {
   try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+
     const { search = '', page = 1, limit = 50 } = req.query;
     const p = Math.max(1, parseInt(page || 1, 10));
     const l = Math.max(1, Math.min(500, parseInt(limit || 50, 10)));
-    const q = {};
+    const q = { deleted: { $ne: true } }; // exclude soft deleted
     if (search) q.$or = [{ fullname: new RegExp(search, 'i') }, { numberId: new RegExp(search, 'i') }];
 
     if (req.user.role === 'teacher') {
@@ -109,7 +114,6 @@ router.get('/', auth, roles(['admin','manager','teacher']), async (req,res) => {
     let sums = [];
     try {
       if (Payment && items.length > 0 && typeof Payment.aggregate === 'function') {
-        // convert ids to ObjectId instances
         const ids = items.map(i => new mongoose.Types.ObjectId(String(i._id)));
         sums = await Payment.aggregate([
           { $match: { personType: 'teacher', personId: { $in: ids } } },
@@ -136,16 +140,22 @@ router.get('/', auth, roles(['admin','manager','teacher']), async (req,res) => {
   }
 });
 
-// GET single teacher details (with paid amount) - add if not present
+// GET single teacher details (with paid amount)
 router.get('/:id', auth, roles(['admin','manager','teacher']), async (req, res) => {
   try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+
     const id = req.params.id;
     if (!id || !mongoose.Types.ObjectId.isValid(String(id))) return res.status(400).json({ message: 'Invalid id' });
 
     const teacher = await Teacher.findById(id).populate('classIds', 'name classId').populate('subjectIds','name subjectId').lean();
-    if (!teacher) return res.status(404).json({ message: 'Teacher not found' });
+    if (!teacher || teacher.deleted) return res.status(404).json({ message: 'Teacher not found' });
 
-    // compute paid amount defensively
+    // visibility: teacher himself only or creator/admin/manager per your roles middleware
+    if (req.user.role === 'teacher' && String(req.user._id) !== String(teacher._id)) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
     let paid = 0;
     try {
       if (Payment && typeof Payment.aggregate === 'function') {
@@ -173,11 +183,13 @@ router.get('/:id', auth, roles(['admin','manager','teacher']), async (req, res) 
 // Update teacher (owner-only)
 router.put('/:id', auth, roles(['admin','manager']), upload.single('photo'), async (req,res) => {
   try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+
     const id = req.params.id;
     if (!id || !mongoose.Types.ObjectId.isValid(String(id))) return res.status(400).json({ message: 'Invalid id' });
 
     const doc = await Teacher.findById(id);
-    if (!doc) return res.status(404).json({ message: 'Teacher not found' });
+    if (!doc || doc.deleted) return res.status(404).json({ message: 'Teacher not found' });
 
     // owner check
     if (String(doc.createdBy) !== String(req.user._id)) return res.status(403).json({ message: 'Forbidden' });
@@ -193,7 +205,7 @@ router.put('/:id', auth, roles(['admin','manager']), upload.single('photo'), asy
     if (typeof update.salary !== 'undefined') update.salary = Number(update.salary);
 
     const t = await Teacher.findByIdAndUpdate(id, update, { new: true }).populate('classIds','name classId').populate('subjectIds','name subjectId').lean();
-    if (t.photo) t.photoUrl = `/uploads/${t.photo}`;
+    if (t && t.photo) t.photoUrl = `/uploads/${t.photo}`;
     res.json(t);
   } catch (err) {
     console.error('PUT /teachers/:id error:', err && err.stack ? err.stack : err);
@@ -201,23 +213,120 @@ router.put('/:id', auth, roles(['admin','manager']), upload.single('photo'), asy
   }
 });
 
-// Delete teacher (owner-only)
+// Delete teacher (soft-delete)
 router.delete('/:id', auth, roles(['admin','manager']), async (req,res) => {
   try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+
     const id = req.params.id;
     if (!id || !mongoose.Types.ObjectId.isValid(String(id))) return res.status(400).json({ message: 'Invalid id' });
 
     const doc = await Teacher.findById(id);
     if (!doc) return res.json({ ok: true });
 
-    if (String(doc.createdBy) !== String(req.user._id)) return res.status(403).json({ message: 'Forbidden' });
+    if (doc.deleted) return res.json({ ok:true, alreadyDeleted:true });
 
-    await Teacher.findByIdAndDelete(id);
-    res.json({ ok: true });
+    if (req.user.role === 'manager' && String(doc.createdBy) !== String(req.user._id)) return res.status(403).json({ message: 'Forbidden' });
+
+    doc.deleted = true;
+    doc.deletedAt = new Date();
+    doc.deletedBy = {
+      id: req.user._id,
+      role: req.user.role,
+      name: (req.user.fullname || req.user.name || '')
+    };
+
+    await doc.save();
+    res.json({ ok: true, deleted: 'soft' });
   } catch (err) {
-    console.error('DELETE /teachers/:id error:', err && err.stack ? err.stack : err);
+    console.error('DELETE /teachers/:id error (soft-delete):', err && err.stack ? err.stack : err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// -----------------------
+// Reset password (admin/manager) for teacher
+// -----------------------
+router.post('/:id/reset-password', auth, roles(['admin','manager']), async (req, res) => {
+  try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+
+    const id = req.params.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+
+    const teacher = await Teacher.findById(id);
+    if (!teacher) return res.status(404).json({ message: 'Teacher not found' });
+
+    // manager can only act on teachers they created
+    if (req.user.role === 'manager' && String(teacher.createdBy) !== String(req.user._id)) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const len = Math.max(8, Math.min(24, parseInt(req.body.length || 10, 10)));
+    let temp = crypto.randomBytes(Math.ceil(len * 0.75)).toString('base64').replace(/[+/=]/g, '').slice(0, len);
+    if (!/[0-9]/.test(temp)) temp = temp.slice(0, -1) + Math.floor(Math.random()*10);
+    if (!/[a-zA-Z]/.test(temp)) temp = temp.slice(0, -1) + 'A';
+
+    const hash = await bcrypt.hash(temp, 10);
+    teacher.passwordHash = hash;
+    teacher.mustChangePassword = true;
+    await teacher.save();
+
+    return res.json({ ok: true, tempPassword: temp, message: 'Temporary password generated — return it once to the caller.' });
+  } catch (err) {
+    console.error('POST /teachers/:id/reset-password error', err && err.stack ? err.stack : err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// -----------------------
+// Change password (self or admin/manager) for teacher
+// -----------------------
+router.post('/:id/change-password', auth, roles(['admin','manager','teacher']), async (req, res) => {
+  try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+
+    const id = req.params.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+
+    const { currentPassword, newPassword } = req.body || {};
+    if (!newPassword || String(newPassword).length < 6) return res.status(400).json({ message: 'New password required (min 6 chars)' });
+
+    const teacher = await Teacher.findById(id);
+    if (!teacher) return res.status(404).json({ message: 'Teacher not found' });
+
+    // teacher changing own password must provide currentPassword
+    if (req.user.role === 'teacher') {
+      if (String(req.user._id) !== String(teacher._id)) return res.status(403).json({ message: 'Forbidden' });
+      if (!currentPassword) return res.status(400).json({ message: 'Current password required' });
+      const match = teacher.passwordHash ? await bcrypt.compare(currentPassword, teacher.passwordHash) : false;
+      if (!match) return res.status(400).json({ message: 'Current password is incorrect' });
+      teacher.passwordHash = await bcrypt.hash(newPassword, 10);
+      teacher.mustChangePassword = false;
+      await teacher.save();
+      return res.json({ ok: true, message: 'Password changed' });
+    }
+
+    // admin/manager may change without current password; manager limited to own created records
+    if (['admin','manager'].includes(req.user.role)) {
+      if (req.user.role === 'manager' && String(teacher.createdBy) !== String(req.user._id)) {
+        return res.status(403).json({ message: 'Forbidden' });
+      }
+      teacher.passwordHash = await bcrypt.hash(newPassword, 10);
+      teacher.mustChangePassword = false;
+      await teacher.save();
+      return res.json({ ok: true, message: 'Password updated by admin/manager' });
+    }
+
+    return res.status(403).json({ message: 'Forbidden' });
+  } catch (err) {
+    console.error('POST /teachers/:id/change-password error', err && (err.stack || err));
     res.status(500).json({ message: 'Server error' });
   }
 });
 
 module.exports = router;
+
+
+
+

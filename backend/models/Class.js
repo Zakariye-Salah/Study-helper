@@ -8,7 +8,16 @@ const ClassSchema = new mongoose.Schema({
   schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
+  updatedAt: { type: Date, default: Date.now },
+
+  // soft-delete metadata (for recycle bin)
+  deleted: { type: Boolean, default: false },
+  deletedAt: { type: Date, default: null },
+  deletedBy: {
+    id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    role: { type: String, default: null },
+    name: { type: String, default: null }
+  }
 }, {
   toJSON: { virtuals: true },
   toObject: { virtuals: true }

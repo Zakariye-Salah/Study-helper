@@ -15,6 +15,7 @@ const CandidateSchema = new Schema({
   title: { type: String, default: '' },
   description: { type: String, default: '' },
   votes: { type: Number, default: 0 },
+  photoUrl: { type: String, default: '' }, // <-- ADDED: store uploaded path (/uploads/...)
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -29,6 +30,7 @@ const VoteSchema = new Schema({
   schoolId: { type: Schema.Types.ObjectId, ref: 'School', default: null },
   candidates: { type: [CandidateSchema], default: [] },
   voters: { type: [VoterSchema], default: [] },
+  active: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 });
 

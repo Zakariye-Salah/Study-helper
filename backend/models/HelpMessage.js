@@ -1,33 +1,36 @@
 // backend/models/HelpMessage.js
 const mongoose = require('mongoose');
+const Schema = mongoose.Schema;
 
-const ReactionSchema = new mongoose.Schema({
-  by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  emoji: { type: String },
-  createdAt: { type: Date, default: Date.now }
+const ReactionSchema = new Schema({
+  by: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  emoji: { type: String, required: true, maxlength: 20 }
 }, { _id: false });
 
-const HelpMessageSchema = new mongoose.Schema({
-  from: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // author (User/Student/Teacher stored in User/other collections)
-  fromName: { type: String },
+const HelpMessageSchema = new Schema({
+  from: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  fromName: { type: String, default: '' },
   text: { type: String, required: true },
-  replyTo: { type: mongoose.Schema.Types.ObjectId, ref: 'HelpMessage', default: null },
-  toRole: { type: String, default: null }, // 'student'|'teacher'|'manager' etc
-  toUser: { type: mongoose.Schema.Types.ObjectId, default: null }, // explicit recipient
+  replyTo: { type: Schema.Types.ObjectId, ref: 'HelpMessage', default: null },
   broadcastToAll: { type: Boolean, default: false },
-  private: { type: Boolean, default: false }, // manager-only private
+  toRole: { type: String, default: null }, // 'student', 'teacher', 'manager', etc.
+  toUser: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+  toUsers: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+  private: { type: Boolean, default: false },
   reactions: { type: [ReactionSchema], default: [] },
   removed: { type: Boolean, default: false },
-  removedBy: { type: mongoose.Schema.Types.ObjectId, default: null },
+  removedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+  removedAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
+  updatedAt: { type: Date, default: null }
 });
 
+// Indexes to accelerate common queries
 HelpMessageSchema.index({ createdAt: -1 });
-
-HelpMessageSchema.pre('save', function(next) {
-  this.updatedAt = new Date();
-  next();
-});
+HelpMessageSchema.index({ from: 1 });
+HelpMessageSchema.index({ toUser: 1 });
+HelpMessageSchema.index({ toUsers: 1 });
+HelpMessageSchema.index({ toRole: 1 });
+HelpMessageSchema.index({ broadcastToAll: 1 });
 
 module.exports = mongoose.model('HelpMessage', HelpMessageSchema);

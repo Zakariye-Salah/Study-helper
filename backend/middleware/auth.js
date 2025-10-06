@@ -5,7 +5,7 @@ require('dotenv').config();
 const User = require('../models/User');
 const Student = require('../models/Student');
 const Teacher = require('../models/Teacher');
-const Parent = require('../models/Parent'); // ensure you have this model
+const Parent = require('../models/Parent'); // ensure model exists
 
 const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
 
@@ -56,6 +56,7 @@ module.exports = async function authMiddleware(req, res, next) {
       const dbUser = await User.findById(userId).select('-passwordHash').lean().exec().catch(()=>null);
       if (dbUser) {
         if (dbUser.suspended) return res.status(403).json({ message: 'Your account has been suspended' });
+        if (dbUser.disabled) return res.status(403).json({ message: 'Your account is disabled' });
         req.user = {
           _id: String(dbUser._id),
           role: dbUser.role || (roleFromToken || 'user'),
@@ -63,7 +64,8 @@ module.exports = async function authMiddleware(req, res, next) {
           fullname: dbUser.fullname || payload.fullname || '',
           email: dbUser.email || payload.email || '',
           suspended: !!dbUser.suspended,
-          warned: !!dbUser.warned
+          warned: !!dbUser.warned,
+          disabled: !!dbUser.disabled
         };
         return next();
       }
@@ -77,7 +79,7 @@ module.exports = async function authMiddleware(req, res, next) {
     if (normalizedRole === 'student') {
       const s = await Student.findById(userId).lean().exec().catch(()=>null);
       if (!s) return res.status(401).json({ message: 'Student not found' });
-      if (s.suspended) return res.status(403).json({ message: 'Your account has been suspended' });
+      if (s.suspended || s.deleted) return res.status(403).json({ message: 'Your account has been suspended or disabled' });
       req.user = {
         _id: String(s._id),
         role: 'student',
@@ -94,7 +96,7 @@ module.exports = async function authMiddleware(req, res, next) {
     if (normalizedRole === 'teacher') {
       const t = await Teacher.findById(userId).lean().exec().catch(()=>null);
       if (!t) return res.status(401).json({ message: 'Teacher not found' });
-      if (t.suspended) return res.status(403).json({ message: 'Your account has been suspended' });
+      if (t.suspended || t.deleted) return res.status(403).json({ message: 'Your account has been suspended or disabled' });
       req.user = {
         _id: String(t._id),
         role: 'teacher',
@@ -111,7 +113,7 @@ module.exports = async function authMiddleware(req, res, next) {
     if (normalizedRole === 'parent') {
       const p = await Parent.findById(userId).lean().exec().catch(()=>null);
       if (!p) return res.status(401).json({ message: 'Parent not found' });
-      // parents may not have schoolId; we prefer child's schoolId if needed in other endpoints
+      if (p.suspended || p.deleted) return res.status(403).json({ message: 'Your account has been suspended or disabled' });
       const childIdFromParentDoc = p.childStudent ? String(p.childStudent) : (payload.childId || payload.child_id || null);
       req.user = {
         _id: String(p._id),

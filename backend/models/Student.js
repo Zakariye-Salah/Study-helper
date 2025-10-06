@@ -17,7 +17,19 @@ const StudentSchema = new mongoose.Schema({
   schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School' },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
+  updatedAt: { type: Date, default: Date.now },
+
+  // soft-delete metadata
+  deleted: { type: Boolean, default: false },
+  deletedAt: { type: Date, default: null },
+  deletedBy: {
+    id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    role: { type: String, default: null },
+    name: { type: String, default: null }
+  },
+
+  // optional: mustChangePassword flag used earlier
+  mustChangePassword: { type: Boolean, default: false }
 });
 
 StudentSchema.index({ numberId: 1, schoolId: 1 }, { unique: true, partialFilterExpression: { numberId: { $exists: true } } });

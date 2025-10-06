@@ -37,9 +37,27 @@ function getBaseUrl(req) {
 /* ---------------- OVERVIEW ---------------- */
 router.get('/overview', auth, async (req, res) => {
   try {
-    const schoolId = req.user && req.user.schoolId && mongoose.Types.ObjectId.isValid(String(req.user.schoolId))
-      ? new mongoose.Types.ObjectId(String(req.user.schoolId))
-      : null;
+
+    // inside router.get('/overview', auth, ...)
+const schoolId = req.user && req.user.schoolId && mongoose.Types.ObjectId.isValid(String(req.user.schoolId))
+? new mongoose.Types.ObjectId(String(req.user.schoolId))
+: null;
+
+const baseMatch = {};
+if (req.user.role === 'manager') {
+// manager: only items created by this manager
+baseMatch.createdBy = req.user._id;
+} else if (req.user.role === 'admin') {
+// admin: global (optionally filter by schoolId if present)
+if (schoolId) baseMatch.schoolId = schoolId;
+} else {
+// other roles - restrict further as needed
+if (schoolId) baseMatch.schoolId = schoolId;
+}
+
+    // const schoolId = req.user && req.user.schoolId && mongoose.Types.ObjectId.isValid(String(req.user.schoolId))
+    //   ? new mongoose.Types.ObjectId(String(req.user.schoolId))
+    //   : null;
 
     const studentsMatch = { ...(schoolId ? { schoolId } : {}) };
     const teachersMatch = { ...(schoolId ? { schoolId } : {}) };

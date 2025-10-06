@@ -1,336 +1,8 @@
-// // // backend/routes/profile.js
-// // const express = require('express');
-// // const router = express.Router();
-// // const auth = require('../middleware/auth');
-// // const roles = require('../middleware/roles');
-// // const Student = require('../models/Student');
-// // const Teacher = require('../models/Teacher');
-// // const User = require('../models/User');
-// // const bcrypt = require('bcrypt');
-// // const multer = require('multer');
-// // const path = require('path');
-// // const fs = require('fs');
-
-// // const uploadDir = path.join(__dirname, '..', 'uploads');
-// // if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-// // const storage = multer.diskStorage({
-// //   destination: (req, file, cb) => cb(null, uploadDir),
-// //   filename: (req, file, cb) => {
-// //     const ext = path.extname(file.originalname);
-// //     cb(null, 'profile-' + Date.now() + ext);
-// //   }
-// // });
-// // const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB
-
-// // // GET /api/profile
-// // // any authenticated user (student or teacher) can fetch their profile
-// // router.get('/', auth, async (req, res) => {
-// //   try {
-// //     const role = req.user.role;
-// //     if (role === 'student') {
-// //       const s = await Student.findById(req.user._id).populate('classId','name classId').populate({ path: 'schoolId', select: 'name' }).lean();
-// //       if(!s) return res.status(404).json({ message: 'Student not found' });
-// //       if (s.photo) s.photoUrl = '/uploads/' + s.photo;
-// //       return res.json({ profile: s, role: 'student' });
-// //     } else if (role === 'teacher') {
-// //       const t = await Teacher.findById(req.user._id).populate('classIds','name classId').populate('subjectIds','name subjectId').lean();
-// //       if(!t) return res.status(404).json({ message: 'Teacher not found' });
-// //       if (t.photo) t.photoUrl = '/uploads/' + t.photo;
-// //       return res.json({ profile: t, role: 'teacher' });
-// //     } else {
-// //       // fallback: if there's a User doc for this id, return basic info
-// //       const u = await User.findById(req.user._id).select('-passwordHash').lean();
-// //       if(!u) return res.status(404).json({ message: 'User not found' });
-// //       return res.json({ profile: u, role: u.role || 'user' });
-// //     }
-// //   } catch (err) {
-// //     console.error('GET /profile err', err);
-// //     res.status(500).json({ message: 'Server error' });
-// //   }
-// // });
-
-// // // PUT /api/profile  (update profile) - accepts JSON or multipart (photo)
-// // router.put('/', auth, upload.single('photo'), async (req, res) => {
-// //   try {
-// //     const role = req.user.role;
-// //     // Build update object from either req.body (for JSON) or form fields
-// //     const body = req.body || {};
-// //     const update = {};
-
-// //     if (body.fullname) update.fullname = String(body.fullname).trim();
-// //     if (body.phone) update.phone = String(body.phone).trim();
-
-// //     if (req.file) {
-// //       update.photo = req.file.filename;
-// //     }
-
-// //     if (role === 'student') {
-// //       if (body.classId) update.classId = body.classId;
-// //       const s = await Student.findByIdAndUpdate(req.user._id, update, { new: true }).populate('classId','name classId').lean();
-// //       if(!s) return res.status(404).json({ message: 'Student not found' });
-// //       if (s.photo) s.photoUrl = '/uploads/' + s.photo;
-// //       return res.json({ profile: s, role: 'student' });
-// //     } else if (role === 'teacher') {
-// //       // classIds & subjectIds may be arrays (multipart will give multiple fields)
-// //       if (body.classIds) {
-// //         // multer form-data may produce string or array
-// //         update.classIds = Array.isArray(body.classIds) ? body.classIds : [body.classIds];
-// //       }
-// //       if (body.subjectIds) update.subjectIds = Array.isArray(body.subjectIds) ? body.subjectIds : [body.subjectIds];
-// //       if (body.salary !== undefined) update.salary = Number(body.salary || 0);
-
-// //       const t = await Teacher.findByIdAndUpdate(req.user._id, update, { new: true }).populate('classIds','name classId').populate('subjectIds','name subjectId').lean();
-// //       if(!t) return res.status(404).json({ message: 'Teacher not found' });
-// //       if (t.photo) t.photoUrl = '/uploads/' + t.photo;
-// //       return res.json({ profile: t, role: 'teacher' });
-// //     } else {
-// //       // generic user update
-// //       const u = await User.findByIdAndUpdate(req.user._id, update, { new: true }).select('-passwordHash').lean();
-// //       if(!u) return res.status(404).json({ message: 'User not found' });
-// //       return res.json({ profile: u, role: u.role || 'user' });
-// //     }
-// //   } catch (err) {
-// //     console.error('PUT /profile err', err);
-// //     res.status(500).json({ message: 'Server error' });
-// //   }
-// // });
-
-// // // POST /api/profile/password  -> change password for student/teacher or user
-// // router.post('/password', auth, async (req, res) => {
-// //   try {
-// //     const { current, password } = req.body || {};
-// //     if (!password || password.length < 6) return res.status(400).json({ message: 'Password too short (min 6)' });
-
-// //     const role = req.user.role;
-// //     if (role === 'student') {
-// //       const StudentModel = Student;
-// //       const doc = await StudentModel.findById(req.user._id);
-// //       if (!doc) return res.status(404).json({ message: 'Student not found' });
-// //       // If current exists on model (passwordHash), verify
-// //       if (doc.passwordHash) {
-// //         if (!current) return res.status(400).json({ message: 'Current password required' });
-// //         const ok = await bcrypt.compare(current, doc.passwordHash);
-// //         if (!ok) return res.status(403).json({ message: 'Current password incorrect' });
-// //       }
-// //       doc.passwordHash = await bcrypt.hash(password, 10);
-// //       await doc.save();
-// //       return res.json({ ok: true });
-// //     } else if (role === 'teacher') {
-// //       const doc = await Teacher.findById(req.user._id);
-// //       if (!doc) return res.status(404).json({ message: 'Teacher not found' });
-// //       if (doc.passwordHash) {
-// //         if (!current) return res.status(400).json({ message: 'Current password required' });
-// //         const ok = await bcrypt.compare(current, doc.passwordHash);
-// //         if (!ok) return res.status(403).json({ message: 'Current password incorrect' });
-// //       }
-// //       doc.passwordHash = await bcrypt.hash(password, 10);
-// //       await doc.save();
-// //       return res.json({ ok: true });
-// //     } else {
-// //       const doc = await User.findById(req.user._id);
-// //       if (!doc) return res.status(404).json({ message: 'User not found' });
-// //       if (doc.passwordHash) {
-// //         if (!current) return res.status(400).json({ message: 'Current password required' });
-// //         const ok = await bcrypt.compare(current, doc.passwordHash);
-// //         if (!ok) return res.status(403).json({ message: 'Current password incorrect' });
-// //       }
-// //       doc.passwordHash = await bcrypt.hash(password, 10);
-// //       await doc.save();
-// //       return res.json({ ok: true });
-// //     }
-// //   } catch (err) {
-// //     console.error('POST /profile/password err', err);
-// //     res.status(500).json({ message: 'Server error' });
-// //   }
-// // });
-
-// // module.exports = router;
-
-
-
-// // backend/routes/profile.js
-// const express = require('express');
-// const router = express.Router();
-// const auth = require('../middleware/auth');
-// const roles = require('../middleware/roles');
-// const Student = require('../models/Student');
-// const Teacher = require('../models/Teacher');
-// const User = require('../models/User');
-// const bcrypt = require('bcrypt');
-// const multer = require('multer');
-// const path = require('path');
-// const fs = require('fs');
-// const ProfileHelper = require('../models/Profile'); // small helper to normalize
-
-// const uploadDir = path.join(__dirname, '..', 'uploads');
-// if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-// const storage = multer.diskStorage({
-//   destination: (req, file, cb) => cb(null, uploadDir),
-//   filename: (req, file, cb) => {
-//     const ext = path.extname(file.originalname || '');
-//     cb(null, 'profile-' + Date.now() + ext);
-//   }
-// });
-// const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB
-
-// // GET /api/profile - return profile for current user
-// router.get('/', auth, async (req, res) => {
-//   try {
-//     const uid = req.user && req.user._id;
-//     if (!uid) return res.status(400).json({ message: 'Invalid user' });
-
-//     // Try student first (common in many apps), then teacher, then user
-//     // We wrap each call to avoid a single populate causing a total 500
-//     const role = req.user.role;
-
-//     // helper to attach photoUrl safely
-//     const attachPhoto = (doc) => {
-//       if (!doc) return doc;
-//       if (doc.photo) doc.photoUrl = `/uploads/${doc.photo}`;
-//       return doc;
-//     };
-
-//     if (role === 'student') {
-//       try {
-//         const s = await Student.findById(uid).populate('classId', 'name classId').lean().catch(()=>null);
-//         if (!s) return res.status(404).json({ message: 'Student not found' });
-//         attachPhoto(s);
-//         const out = ProfileHelper.normalize(s, 'student');
-//         return res.json({ profile: out, role: 'student' });
-//       } catch (e) {
-//         console.error('GET /profile student branch error', e);
-//         // continue to fallback to generic user
-//       }
-//     } else if (role === 'teacher') {
-//       try {
-//         const t = await Teacher.findById(uid)
-//           .populate('classIds', 'name classId')
-//           .populate('subjectIds', 'name subjectId')
-//           .lean()
-//           .catch(()=>null);
-//         if (!t) return res.status(404).json({ message: 'Teacher not found' });
-//         attachPhoto(t);
-//         const out = ProfileHelper.normalize(t, 'teacher');
-//         return res.json({ profile: out, role: 'teacher' });
-//       } catch (e) {
-//         console.error('GET /profile teacher branch error', e);
-//       }
-//     }
-
-//     // fallback: try User model (generic)
-//     try {
-//       const u = await User.findById(uid).select('-passwordHash').lean().catch(()=>null);
-//       if (!u) return res.status(404).json({ message: 'User not found' });
-//       if (u.photo) u.photoUrl = `/uploads/${u.photo}`;
-//       const out = ProfileHelper.normalize(u, u.role || 'user');
-//       return res.json({ profile: out, role: out.role || u.role || 'user' });
-//     } catch (e) {
-//       console.error('GET /profile user fallback error', e);
-//       return res.status(500).json({ message: 'Server error' });
-//     }
-//   } catch (err) {
-//     console.error('GET /profile err', err);
-//     res.status(500).json({ message: 'Server error' });
-//   }
-// });
-
-// // PUT /api/profile - update current user's profile
-// // accepts either JSON or multipart/form-data (photo)
-// router.put('/', auth, upload.single('photo'), async (req, res) => {
-//   try {
-//     const uid = req.user && req.user._id;
-//     const role = req.user && req.user.role;
-//     if (!uid) return res.status(400).json({ message: 'Invalid user' });
-
-//     const input = req.body || {};
-//     const update = {};
-
-//     if (typeof input.fullname !== 'undefined') update.fullname = String(input.fullname).trim();
-//     if (typeof input.phone !== 'undefined') update.phone = String(input.phone).trim();
-
-//     if (req.file && req.file.filename) {
-//       update.photo = req.file.filename;
-//     }
-
-//     if (role === 'student') {
-//       if (typeof input.classId !== 'undefined') {
-//         update.classId = input.classId || undefined;
-//       }
-//       const s = await Student.findByIdAndUpdate(uid, update, { new: true }).populate('classId', 'name classId').lean();
-//       if (!s) return res.status(404).json({ message: 'Student not found' });
-//       if (s.photo) s.photoUrl = '/uploads/' + s.photo;
-//       return res.json({ profile: ProfileHelper.normalize(s, 'student'), role: 'student' });
-//     } else if (role === 'teacher') {
-//       // classIds and subjectIds may be strings or arrays in multipart
-//       if (typeof input.classIds !== 'undefined') {
-//         update.classIds = Array.isArray(input.classIds) ? input.classIds : (input.classIds ? [input.classIds] : []);
-//       }
-//       if (typeof input.subjectIds !== 'undefined') {
-//         update.subjectIds = Array.isArray(input.subjectIds) ? input.subjectIds : (input.subjectIds ? [input.subjectIds] : []);
-//       }
-//       if (typeof input.salary !== 'undefined') {
-//         update.salary = Number(input.salary || 0);
-//       }
-
-//       const t = await Teacher.findByIdAndUpdate(uid, update, { new: true })
-//         .populate('classIds', 'name classId')
-//         .populate('subjectIds', 'name subjectId')
-//         .lean();
-//       if (!t) return res.status(404).json({ message: 'Teacher not found' });
-//       if (t.photo) t.photoUrl = '/uploads/' + t.photo;
-//       return res.json({ profile: ProfileHelper.normalize(t, 'teacher'), role: 'teacher' });
-//     } else {
-//       const u = await User.findByIdAndUpdate(uid, update, { new: true }).select('-passwordHash').lean();
-//       if (!u) return res.status(404).json({ message: 'User not found' });
-//       if (u.photo) u.photoUrl = '/uploads/' + u.photo;
-//       return res.json({ profile: ProfileHelper.normalize(u, u.role || 'user'), role: u.role || 'user' });
-//     }
-//   } catch (err) {
-//     console.error('PUT /profile err', err && err.stack ? err.stack : err);
-//     res.status(500).json({ message: 'Server error', err: err && err.message ? err.message : String(err) });
-//   }
-// });
-
-// // POST /api/profile/password - change password for student/teacher/user
-// // router.post('/password', auth, async (req, res) => {
-// //   try {
-// //     const { current, password } = req.body || {};
-// //     if (!password || String(password).length < 6) return res.status(400).json({ message: 'Password too short (min 6)' });
-
-// //     const role = req.user.role;
-// //     const uid = req.user._id;
-
-// //     async function changeDocPassword(Model) {
-// //       const doc = await Model.findById(uid);
-// //       if (!doc) return res.status(404).json({ message: 'Not found' });
-// //       if (doc.passwordHash) {
-// //         if (!current) return res.status(400).json({ message: 'Current password required' });
-// //         const ok = await bcrypt.compare(current, doc.passwordHash);
-// //         if (!ok) return res.status(403).json({ message: 'Current password incorrect' });
-// //       }
-// //       doc.passwordHash = await bcrypt.hash(password, 10);
-// //       await doc.save();
-// //       return res.json({ ok: true });
-// //     }
-
-// //     if (role === 'student') return await changeDocPassword(Student);
-// //     if (role === 'teacher') return await changeDocPassword(Teacher);
-// //     return await changeDocPassword(User);
-// //   } catch (err) {
-// //     console.error('POST /profile/password err', err);
-// //     res.status(500).json({ message: 'Server error' });
-// //   }
-// // });
-
-// module.exports = router;
-
-
 // backend/routes/profile.js
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const bcrypt = require('bcrypt');
 
 const auth = require('../middleware/auth');
 const User = require('../models/User');
@@ -338,7 +10,12 @@ const Student = require('../models/Student');
 const Teacher = require('../models/Teacher');
 const Parent = require('../models/Parent');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
+let School = null;
+try {
+  School = require('../models/School');
+} catch (e) {
+  console.warn('models/School not found, using manager fallbacks');
+}
 
 function isObjectIdString(s) {
   return typeof s === 'string' && mongoose.Types.ObjectId.isValid(s);
@@ -354,10 +31,87 @@ function computeStatus(fee, paid) {
 }
 
 /**
+ * attachSchoolAndManager(profileObj, schoolId, createdBy)
+ * (best-effort attachments)
+ */
+async function attachSchoolAndManager(profileObj, schoolId, createdBy) {
+  try {
+    if (!profileObj) return;
+
+    if (schoolId && School) {
+      try {
+        const sc = await School.findById(String(schoolId)).select('name manager').lean().catch(()=>null);
+        if (sc) {
+          profileObj.school = { _id: String(sc._id), name: sc.name || null };
+          if (sc.manager && isObjectIdString(String(sc.manager))) {
+            const mgr = await User.findById(String(sc.manager)).select('fullname').lean().catch(()=>null);
+            if (mgr) {
+              profileObj.manager = { _id: String(mgr._id), fullname: mgr.fullname || null };
+              if (!profileObj.school.name && mgr.fullname) profileObj.school.name = mgr.fullname;
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('attachSchoolAndManager: School query failed', e && e.message ? e.message : e);
+      }
+    }
+
+    if (createdBy && isObjectIdString(String(createdBy))) {
+      try {
+        const by = await User.findById(String(createdBy)).select('fullname role schoolId').lean().catch(()=>null);
+        if (by) {
+          profileObj.manager = { _id: String(by._id), fullname: by.fullname || null };
+          if (!profileObj.school) profileObj.school = {};
+          if (!profileObj.school.name && by.fullname) profileObj.school.name = by.fullname;
+          if ((!profileObj.school || !profileObj.school._id) && by.schoolId) {
+            profileObj.school = profileObj.school || {};
+            profileObj.school._id = String(by.schoolId);
+          }
+          return;
+        }
+      } catch (e) {
+        console.warn('attachSchoolAndManager: createdBy lookup failed', e && e.message ? e.message : e);
+      }
+    }
+
+    if (schoolId) {
+      try {
+        const mgrUser = await User.findOne({ schoolId: String(schoolId), role: 'manager' }).select('fullname').lean().catch(()=>null);
+        if (mgrUser) {
+          profileObj.manager = { _id: String(mgrUser._id), fullname: mgrUser.fullname || null };
+          if (!profileObj.school) profileObj.school = {};
+          if (!profileObj.school.name && mgrUser.fullname) profileObj.school.name = mgrUser.fullname;
+          return;
+        }
+      } catch (e) {
+        console.warn('attachSchoolAndManager: manager-by-school lookup failed', e && e.message ? e.message : e);
+      }
+    }
+
+    try {
+      const anyMgr = await User.findOne({ role: 'manager' }).select('fullname schoolId').lean().catch(()=>null);
+      if (anyMgr) {
+        profileObj.manager = { _id: String(anyMgr._id), fullname: anyMgr.fullname || null };
+        if (!profileObj.school) profileObj.school = {};
+        if (!profileObj.school.name && anyMgr.fullname) profileObj.school.name = anyMgr.fullname;
+        if (!profileObj.school._id && anyMgr.schoolId) profileObj.school._id = String(anyMgr.schoolId);
+        return;
+      }
+    } catch (e) {
+      // swallow
+    }
+
+    if (!profileObj.school && schoolId) profileObj.school = { _id: String(schoolId) };
+
+  } catch (err) {
+    console.error('attachSchoolAndManager error', err && err.stack ? err.stack : err);
+  }
+}
+
+/**
  * GET /api/profile
- * - If req.user.role === 'parent' return the linked child student as the profile.
- * - Student/Teacher: return their own record
- * - Admin/manager/user: return user doc if available or token-derived minimal profile
+ * (unchanged behavior - returns profile based on role; parent sees child)
  */
 router.get('/', auth, async (req, res) => {
   try {
@@ -366,13 +120,10 @@ router.get('/', auth, async (req, res) => {
 
     const normalizedRole = (me.role || '').toLowerCase();
 
-    // Parent: return the child student record as the profile
+    // Parent -> return child student
     if (normalizedRole === 'parent') {
       try {
-        // prefer childId in token payload
-        let childId = me.childId || me.child || me.child_id || me.childId || null;
-
-        // fallback: resolve from Parent collection
+        let childId = me.childId || me.child || me.child_id || null;
         if (!childId) {
           const parentId = me.id || me._id || null;
           if (parentId && isObjectIdString(String(parentId))) {
@@ -380,24 +131,24 @@ router.get('/', auth, async (req, res) => {
             if (parentDoc && parentDoc.childStudent) childId = String(parentDoc.childStudent);
           }
         }
-
         if (!childId || !isObjectIdString(String(childId))) {
           return res.status(404).json({ ok: false, message: 'Child student not found for this parent' });
         }
 
-        const student = await Student.findById(String(childId)).populate('classId', 'name classId').lean().catch(()=>null);
+        const student = await Student.findById(String(childId)).populate('classId','name classId').lean().catch(()=>null);
         if (!student) return res.status(404).json({ ok: false, message: 'Child student not found' });
 
-        // Derive/normalize fields expected by client
         student.paidAmount = student.paidAmount || 0;
         student.totalDue = (student.totalDue || student.fee || 0);
         student.status = student.status || computeStatus(student.fee, student.paidAmount);
         if (student.photo) student.photoUrl = `/uploads/${student.photo}`;
 
+        await attachSchoolAndManager(student, student.schoolId, student.createdBy);
+
         return res.json({
           ok: true,
           profile: student,
-          role: 'student', // make UI render student-specific fields
+          role: 'student',
           meta: { viewing: 'child', parentName: me.fullname || null, childNumberId: me.childNumberId || student.numberId || null }
         });
       } catch (err) {
@@ -406,7 +157,7 @@ router.get('/', auth, async (req, res) => {
       }
     }
 
-    // Student: return own student record
+    // Student -> own student record
     if (normalizedRole === 'student') {
       try {
         const id = me._id || me.id;
@@ -420,6 +171,8 @@ router.get('/', auth, async (req, res) => {
         student.status = student.status || computeStatus(student.fee, student.paidAmount);
         if (student.photo) student.photoUrl = `/uploads/${student.photo}`;
 
+        await attachSchoolAndManager(student, student.schoolId, student.createdBy);
+
         return res.json({ ok: true, profile: student, role: 'student' });
       } catch (err) {
         console.error('GET /profile (student) error', err && (err.stack||err));
@@ -427,14 +180,23 @@ router.get('/', auth, async (req, res) => {
       }
     }
 
-    // Teacher: return teacher record
+    // Teacher -> own teacher record
     if (normalizedRole === 'teacher') {
       try {
         const id = me._id || me.id;
         if (!id || !isObjectIdString(String(id))) return res.status(400).json({ ok: false, message: 'Invalid id' });
 
-        const teacher = await Teacher.findById(String(id)).lean().catch(()=>null);
+        const teacher = await Teacher.findById(String(id))
+          .populate('classIds', 'name classId')
+          .populate('subjectIds', 'name subjectId')
+          .lean()
+          .catch(()=>null);
+
         if (!teacher) return res.status(404).json({ ok: false, message: 'Teacher not found' });
+
+        if (teacher.photo) teacher.photoUrl = `/uploads/${teacher.photo}`;
+
+        await attachSchoolAndManager(teacher, teacher.schoolId, teacher.createdBy);
 
         return res.json({ ok: true, profile: teacher, role: 'teacher' });
       } catch (err) {
@@ -443,7 +205,7 @@ router.get('/', auth, async (req, res) => {
       }
     }
 
-    // Admin/manager/other: try to load user doc, else fallback to token-supplied minimal user
+    // Admin/manager/other -> user doc fallback
     try {
       const id = me._id || me.id;
       let outUser = null;
@@ -454,6 +216,13 @@ router.get('/', auth, async (req, res) => {
       if (!outUser) {
         outUser = { _id: String(me._id || me.id || ''), fullname: me.fullname || '', email: me.email || '', role: me.role || 'user' };
       }
+
+      if (outUser.schoolId) {
+        await attachSchoolAndManager(outUser, outUser.schoolId, outUser.createdBy);
+      } else if (outUser.createdBy) {
+        await attachSchoolAndManager(outUser, null, outUser.createdBy);
+      }
+
       return res.json({ ok: true, profile: outUser, role: outUser.role || me.role || 'user' });
     } catch (err) {
       console.error('GET /profile (user) error', err && (err.stack||err));
@@ -462,6 +231,171 @@ router.get('/', auth, async (req, res) => {
 
   } catch (err) {
     console.error('GET /profile fatal error', err && (err.stack||err));
+    return res.status(500).json({ ok: false, message: 'Server error' });
+  }
+});
+
+/**
+ * PUT /api/profile
+ *
+ * - Students/Teachers/Parents: change their own password only (no old pw required). Other fields ignored.
+ * - Admins/Managers: can update their own fullname, email and/or password.
+ */
+router.put('/', auth, async (req, res) => {
+  try {
+    const me = req.user || null;
+    if (!me) return res.status(401).json({ ok: false, message: 'Auth required' });
+
+    const role = (me.role || '').toLowerCase();
+    const payload = req.body || {};
+
+    // -------------------- STUDENT / TEACHER / PARENT: password-only --------------------
+    if (['student','teacher','parent'].includes(role)) {
+      const newPassword = (payload.password || payload.newPassword || '').toString();
+      if (!newPassword || newPassword.length < 6) {
+        return res.status(400).json({ ok: false, message: 'New password required (min 6 chars)' });
+      }
+
+      // choose correct model
+      let Model = null;
+      if (role === 'student') Model = Student;
+      else if (role === 'teacher') Model = Teacher;
+      else if (role === 'parent') Model = Parent;
+
+      if (!Model) return res.status(500).json({ ok: false, message: 'Server missing model for your role' });
+
+      const doc = await Model.findById(String(me._id)).catch(()=>null);
+      if (!doc) return res.status(404).json({ ok: false, message: 'Record not found' });
+
+      if (typeof doc.setPassword === 'function') {
+        try {
+          await doc.setPassword(newPassword);
+        } catch (e) {
+          console.warn('setPassword failed, falling back to bcrypt', e && e.message ? e.message : e);
+          const rounds = Number(process.env.BCRYPT_ROUNDS || 10);
+          const hash = await bcrypt.hash(newPassword, rounds);
+          if (typeof doc.passwordHash !== 'undefined') doc.passwordHash = hash;
+          else if (typeof doc.password !== 'undefined') doc.password = newPassword;
+          else doc.passwordHash = hash;
+        }
+      } else {
+        const rounds = Number(process.env.BCRYPT_ROUNDS || 10);
+        const hash = await bcrypt.hash(newPassword, rounds);
+        if (typeof doc.passwordHash !== 'undefined') doc.passwordHash = hash;
+        else if (typeof doc.password !== 'undefined') doc.password = newPassword;
+        else doc.passwordHash = hash;
+      }
+
+      if (typeof doc.mustChangePassword !== 'undefined') doc.mustChangePassword = false;
+      await doc.save();
+
+      return res.json({ ok: true, message: 'Password updated' });
+    }
+
+    // -------------------- ADMIN / MANAGER: allow fullname/email/password --------------------
+    if (['admin','manager'].includes(role)) {
+      const allowedFields = {};
+      if (payload.fullname && String(payload.fullname).trim()) allowedFields.fullname = String(payload.fullname).trim();
+      if (payload.email && String(payload.email).trim()) allowedFields.email = String(payload.email).trim().toLowerCase();
+      const newPassword = payload.password || payload.newPassword || null;
+
+      const user = await User.findById(String(me._id)).catch(()=>null);
+      if (!user) return res.status(404).json({ ok: false, message: 'User not found' });
+
+      // if email is changing, ensure uniqueness
+      if (allowedFields.email && allowedFields.email !== (user.email || '')) {
+        const exists = await User.findOne({ email: allowedFields.email }).lean().catch(()=>null);
+        if (exists && String(exists._id) !== String(user._id)) {
+          return res.status(400).json({ ok: false, message: 'Email already in use' });
+        }
+        user.email = allowedFields.email;
+      }
+
+      if (allowedFields.fullname) user.fullname = allowedFields.fullname;
+
+      if (newPassword) {
+        if (typeof user.setPassword === 'function') {
+          try {
+            await user.setPassword(newPassword);
+          } catch (e) {
+            console.warn('user.setPassword failed, falling back to bcrypt', e && e.message ? e.message : e);
+            const rounds = Number(process.env.BCRYPT_ROUNDS || 10);
+            user.passwordHash = await bcrypt.hash(newPassword, rounds);
+          }
+        } else {
+          const rounds = Number(process.env.BCRYPT_ROUNDS || 10);
+          user.passwordHash = await bcrypt.hash(newPassword, rounds);
+        }
+        if (typeof user.mustChangePassword !== 'undefined') user.mustChangePassword = false;
+      }
+
+      await user.save();
+
+      const out = user.toObject ? user.toObject() : user;
+      if (out.passwordHash) delete out.passwordHash;
+      return res.json({ ok: true, message: 'Profile updated', profile: out });
+    }
+
+    // default: disallow
+    return res.status(403).json({ ok: false, message: 'Updating profile not allowed for your role here' });
+
+  } catch (err) {
+    console.error('PUT /profile error', err && (err.stack || err));
+    return res.status(500).json({ ok: false, message: 'Server error' });
+  }
+});
+
+/**
+ * POST /api/profile/change-password
+ * (kept for compatibility; same semantics as PUT for student/teacher/parent)
+ */
+router.post('/change-password', auth, async (req, res) => {
+  try {
+    const me = req.user || null;
+    if (!me) return res.status(401).json({ ok: false, message: 'Auth required' });
+
+    const role = (me.role || '').toLowerCase();
+    if (!['student','teacher','parent'].includes(role)) {
+      return res.status(403).json({ ok: false, message: 'Only students, teachers and parents can change password here' });
+    }
+
+    const newPassword = (req.body && (req.body.newPassword || req.body.password || '')).toString();
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ ok: false, message: 'New password required (min 6 chars)' });
+    }
+
+    let Model = null;
+    if (role === 'student') Model = Student;
+    else if (role === 'teacher') Model = Teacher;
+    else if (role === 'parent') Model = Parent;
+
+    if (!Model) return res.status(500).json({ ok: false, message: 'Model missing' });
+
+    const doc = await Model.findById(String(me._id)).catch(()=>null);
+    if (!doc) return res.status(404).json({ ok: false, message: 'Record not found' });
+
+    if (typeof doc.setPassword === 'function') {
+      try { await doc.setPassword(newPassword); } catch (e) {
+        const rounds = Number(process.env.BCRYPT_ROUNDS || 10);
+        const hash = await bcrypt.hash(newPassword, rounds);
+        if (typeof doc.passwordHash !== 'undefined') doc.passwordHash = hash;
+        else if (typeof doc.password !== 'undefined') doc.password = newPassword;
+        else doc.passwordHash = hash;
+      }
+    } else {
+      const rounds = Number(process.env.BCRYPT_ROUNDS || 10);
+      const hash = await bcrypt.hash(newPassword, rounds);
+      if (typeof doc.passwordHash !== 'undefined') doc.passwordHash = hash;
+      else if (typeof doc.password !== 'undefined') doc.password = newPassword;
+      else doc.passwordHash = hash;
+    }
+
+    if (typeof doc.mustChangePassword !== 'undefined') doc.mustChangePassword = false;
+    await doc.save();
+
+    return res.json({ ok: true, message: 'Password changed' });
+  } catch (err) {
+    console.error('POST /profile/change-password error', err && (err.stack || err));
     return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });

@@ -1,26 +1,991 @@
-apiFetch('/api/exams') → apiFetch('/exams')
+// Frontend: complete renderVote function (replace your existing one)
+async function renderVote() {
+  // --- inject responsive styles (only once) ---
+  if (!document.getElementById('vote-responsive-styles')) {
+    const css = `
+/* ---------- Layout + Responsive ---------- */
+.vote-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.vote-card {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  padding: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 
-apiFetch('/api/classes') → apiFetch('/classes')
+/* header layout: left (title/desc) and right (meta/actions) */
+.vote-card__header {
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:12px;
+}
+.vote-card__left { flex:1; min-width:0; }
+.vote-card__right { flex:0 0 auto; display:flex; align-items:flex-start; gap:12px; }
 
-apiFetch(\/api/classes/${cid}`) → ``apiFetch(/classes/${cid}`)``
+/* Title / Description clamp to avoid pushing buttons */
+.vote-card__title,
+.vote-detail__title {
+  font-weight:700;
+  font-size:16px;
+  margin-bottom:6px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;      /* show up to 2 lines */
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+  line-height:1.18;
+}
+.vote-card__desc,
+.vote-detail__desc {
+  font-size:13px;
+  color:#666;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;      /* show up to 3 lines */
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top:4px;
+}
 
-apiFetch('/api/students/batch', { method: 'POST', body: { ids } }) → apiFetch('/students/batch', { method: 'POST', body: { ids } })
+/* Buttons area keeps fixed width; prevent wrapping */
+.vote-card__actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
 
-apiFetch(\/api/exams/${examId}`) → ``apiFetch(/exams/${examId}`)``
+/* -------- Candidate preview inside vote list card -------- */
+.vote-card__cands {
+  display:flex;
+  gap:12px;
+  flex-wrap:wrap;
+  align-items:flex-start;
+  margin-top:6px;
+}
+.vote-card__cand {
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+  min-width:0;
+  background: #fafafa;
+  padding:8px;
+  border-radius:8px;
+  flex:1 1 220px;
+}
+/* make list thumb taller so image shows more */
+.vote-card__cand-thumb {
+  width:120px;
+  height:90px;
+  border-radius:8px;
+  overflow:hidden;
+  flex:0 0 120px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:#fff;
+  border:1px solid #eee;
+}
+.vote-card__cand-thumb img {
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  object-position:center center;
+  display:block;
+}
+.vote-card__cand-thumb.no-photo {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:#888;
+  font-size:12px;
+  background:#fafafa;
+  border:1px dashed #eee;
+}
 
-apiFetch(\/api/exams/${exam._id}/results`, ...) → ``apiFetch(/exams/${exam._id}/results`, ...)``
+/* ---------- Candidate detail (open vote) ---------- */
+.vote-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  margin-top: 12px;
+}
+.candidate-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
 
-apiFetch(\/api/classes/${cls._id}/students`) → ``apiFetch(/classes/${cls._id}/students`)``
+/* make photos in detail view larger and centered */
+.candidate-card__photo-wrap {
+  width:100%;
+  height:260px;                 /* LARGER height so more of image is visible */
+  overflow:hidden;
+  border-radius:10px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:#fafafa;
+}
+.candidate-card__photo {
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  object-position:center center; /* ensure center focus */
+  display:block;
+}
 
-apiFetch(\/api/exams/${examId}`) in other spots → ``apiFetch(/exams/${examId}`)``
+/* clamp candidate title/desc in detail so they don't overflow */
+.candidate-card__name {
+  font-weight:700;
+  font-size:16px;
+  display:-webkit-box;
+  -webkit-line-clamp:2;
+  -webkit-box-orient:vertical;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.candidate-card__title, .candidate-card__desc {
+  display:-webkit-box;
+  -webkit-line-clamp:2;
+  -webkit-box-orient:vertical;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  color:#666;
+  font-size:13px;
+}
 
-Example patch for the top loadExams() call:
+/* Results rows */
+.results-list { margin-top:12px; }
+.results-row { background:#fff; padding:10px; border-radius:8px; margin-bottom:8px; box-shadow:0 1px 2px rgba(0,0,0,0.04); }
 
--    const resp = await apiFetch('/api/exams').catch(e => ({ ok:false }));
-+    const resp = await apiFetch('/exams').catch(e => ({ ok:false }));
+/* small tweaks */
+.vote-detail__top, .vote-detail__totals { margin-top:8px; }
+.vote-card__meta { text-align:right; min-width:140px; }
+.vote-card__time { font-weight:600; font-size:13px; }
 
+/* mobile rules */
+@media (max-width: 700px) {
+  .vote-list-grid { grid-template-columns: 1fr; }
+  .vote-card__cands { flex-direction: column; }
+  .vote-card__cand { width:100%; flex: 1 1 auto; }
+  .candidate-card__photo-wrap { height:200px; } /* slightly smaller on small screens */
+  .vote-grid { grid-template-columns: 1fr; }
+  .vote-card__title { font-size:15px; -webkit-line-clamp:2; }
+  .vote-card { padding:10px; }
+  .vote-card__meta { text-align:left; }
+}
+`;
+    const s = document.createElement('style');
+    s.id = 'vote-responsive-styles';
+    s.appendChild(document.createTextNode(css));
+    document.head.appendChild(s);
+  }
 
-And one of the other places:
+  // clear previous timers
+  if (window.__voteRefreshTimer) { clearInterval(window.__voteRefreshTimer); window.__voteRefreshTimer = null; }
+  if (window.__votePollTimer) { clearInterval(window.__votePollTimer); window.__votePollTimer = null; }
 
--    const classesResp = await apiFetch('/api/classes').catch(()=>null);
-+    const classesResp = await apiFetch('/classes').catch(()=>null);
+  app.innerHTML = '';
+  const node = tpl('tpl-vote');
+  app.appendChild(node);
+
+  const createBtn = document.getElementById('create-vote-btn');
+  const voteList = document.getElementById('vote-list');
+
+  const curUser = await getCurrentUser().catch(()=>null);
+  if (!curUser) { navigate('login'); return; }
+
+  // hide create for students & teachers
+  const roleNormalized = (curUser.role || '').toLowerCase();
+  if (['student','students','teacher','teachers'].includes(roleNormalized)) {
+    if (createBtn) createBtn.style.display = 'none';
+  } else {
+    if (createBtn) createBtn.style.display = '';
+  }
+
+  let votesCache = [];
+  let listMounted = true;
+
+  function resolvePhotoUrl(photoPath) {
+    if (!photoPath) return '';
+    if (/^https?:\/\//i.test(photoPath)) return photoPath;
+    const base = (typeof API_BASE !== 'undefined' && API_BASE) ? (API_BASE.replace(/\/api\/?$/,'') ) : ((typeof SERVER_BASE !== 'undefined' && SERVER_BASE) ? SERVER_BASE.replace(/\/+$/,'') : window.location.origin);
+    const p = photoPath.startsWith('/') ? photoPath : ('/' + photoPath);
+    return base + p;
+  }
+
+  function timeLeftMs(endsAt) {
+    if (!endsAt) return Number.POSITIVE_INFINITY;
+    return new Date(endsAt) - new Date();
+  }
+  function timeLeftText(endsAt) {
+    const ms = timeLeftMs(endsAt);
+    if (ms === Number.POSITIVE_INFINITY) return 'No end';
+    if (ms <= 0) return 'Ended';
+    const days = Math.floor(ms / (24*3600*1000));
+    const hours = Math.floor((ms % (24*3600*1000)) / (3600*1000));
+    const mins = Math.floor((ms % (3600*1000)) / (60*1000));
+    const secs = Math.floor((ms % (60*1000)) / 1000);
+    if (days) return `${days}d ${hours}h ${mins}m`;
+    if (hours) return `${hours}h ${mins}m`;
+    if (mins) return `${mins}m ${secs}s`;
+    return `${secs}s`;
+  }
+  function normalizeAllowed(val) {
+    if (!val) return 'students';
+    const v = String(val).toLowerCase().trim();
+    if (v === 'student' || v === 'students') return 'students';
+    if (v === 'teacher' || v === 'teachers') return 'teachers';
+    if (v === 'all' || v === 'everyone') return 'all';
+    return 'students';
+  }
+  function normalizeUserRole(role) {
+    if (!role) return '';
+    const r = String(role).toLowerCase().trim();
+    if (r === 'students' || r === 'student') return 'student';
+    if (r === 'teachers' || r === 'teacher') return 'teacher';
+    if (r === 'admin') return 'admin';
+    if (r === 'manager') return 'manager';
+    return r;
+  }
+  function computeRankingClientSide(candidates) {
+    const arr = (candidates || []).map(c => ({ ...c }));
+    arr.sort((a,b) => (b.votes||0) - (a.votes||0));
+    let lastVotes = null, lastRank = 0;
+    for (let i = 0; i < arr.length; i++) {
+      const c = arr[i];
+      if (i === 0) { lastVotes = c.votes || 0; lastRank = 1; c.rank = 1; continue; }
+      if ((c.votes || 0) === lastVotes) c.rank = lastRank;
+      else { c.rank = i + 1; lastRank = c.rank; lastVotes = c.votes || 0; }
+    }
+    const winners = [];
+    if (arr.length) {
+      const topVotes = arr[0].votes || 0;
+      for (const cc of arr) {
+        if ((cc.votes || 0) === topVotes) winners.push(cc);
+        else break;
+      }
+    }
+    return { ranking: arr, winners, tie: winners.length > 1 };
+  }
+  function computeTotals(vote) {
+    const totals = { total: 0, byRole: { student: 0, teacher: 0, other: 0 } };
+    if (Array.isArray(vote.voters) && vote.voters.length >= 0) {
+      totals.total = vote.voters.length;
+      for (const v of vote.voters) {
+        const r = (v && v.voterRole) ? String(v.voterRole).toLowerCase() : '';
+        if (r === 'student' || r === 'students') totals.byRole.student++;
+        else if (r === 'teacher' || r === 'teachers') totals.byRole.teacher++;
+        else totals.byRole.other++;
+      }
+      return totals;
+    }
+    const sum = (vote.candidates || []).reduce((s, c) => s + (Number(c.votes) || 0), 0);
+    totals.total = sum;
+    return totals;
+  }
+  function isVoteActive(vote) {
+    const now = new Date();
+    if (vote.active === false) return false;
+    if (vote.startsAt && new Date(vote.startsAt) > now) return false;
+    if (vote.endsAt && new Date(vote.endsAt) <= now) return false;
+    return true;
+  }
+
+  // timers & polling
+  function startLiveTimer() {
+    if (window.__voteRefreshTimer) { clearInterval(window.__voteRefreshTimer); window.__voteRefreshTimer = null; }
+    updateAllTimers();
+    window.__voteRefreshTimer = setInterval(() => {
+      if (!listMounted) { clearInterval(window.__voteRefreshTimer); window.__voteRefreshTimer = null; return; }
+      updateAllTimers();
+    }, 1000);
+  }
+  function updateAllTimers() {
+    const metaNodes = document.querySelectorAll('[data-endsat]');
+    metaNodes.forEach(n => {
+      const endsAt = n.getAttribute('data-endsat');
+      const ms = timeLeftMs(endsAt);
+      const timeEl = n.querySelector('.vote-card__time');
+      if (timeEl) timeEl.textContent = timeLeftText(endsAt);
+      const card = n.closest('.vote-card');
+      if (!card) return;
+      card.classList.remove('vote-card--soon','vote-card--urgent','vote-card--ended');
+      if (ms <= 0) {
+        card.classList.add('vote-card--ended');
+      } else {
+        if (ms <= (10*60*1000)) card.classList.add('vote-card--urgent');
+        else if (ms <= (60*60*1000)) card.classList.add('vote-card--soon');
+      }
+    });
+
+    const detailTimerEl = document.querySelector('[data-detail-endsat]');
+    if (detailTimerEl) {
+      const endsAt = detailTimerEl.getAttribute('data-detail-endsat');
+      const ms = timeLeftMs(endsAt);
+      const timeEl = detailTimerEl.querySelector('.vote-detail__time');
+      if (timeEl) timeEl.textContent = timeLeftText(endsAt);
+      if (ms <= 0 && typeof detailTimerEl._onEnded === 'function') {
+        detailTimerEl._onEnded();
+        detailTimerEl._onEnded = null;
+      }
+    }
+  }
+
+  function startPolling() {
+    if (window.__votePollTimer) { clearInterval(window.__votePollTimer); window.__votePollTimer = null; }
+    pollFetch();
+    window.__votePollTimer = setInterval(() => {
+      if (!listMounted) { clearInterval(window.__votePollTimer); window.__votePollTimer = null; return; }
+      pollFetch();
+    }, 5000);
+  }
+  async function pollFetch() {
+    try {
+      const resp = await apiFetch('/votes').catch(()=>({ ok:false }));
+      if (!resp || !resp.ok) return;
+      votesCache = resp.votes || [];
+      if (listMounted) renderList(votesCache);
+    } catch (err) { console.warn('poll fetch error', err); }
+  }
+
+  // load list
+  async function loadList() {
+    voteList.innerHTML = '<div class="muted">Loading...</div>';
+    const resp = await apiFetch('/votes').catch(()=>({ ok:false }));
+    if (!resp || !resp.ok) { voteList.innerHTML = '<div class="muted">Failed to load votes</div>'; return; }
+    votesCache = resp.votes || [];
+    renderList(votesCache);
+    startLiveTimer();
+    startPolling();
+  }
+
+  function renderList(votes) {
+    voteList.innerHTML = '';
+    if (!votes || votes.length === 0) { voteList.innerHTML = '<div class="muted">No elections found</div>'; return; }
+    const wrap = document.createElement('div'); wrap.className = 'vote-list-grid';
+
+    votes.forEach(v => {
+      const msLeft = timeLeftMs(v.endsAt);
+      const ended = msLeft <= 0;
+      const totals = computeTotals(v);
+
+      const card = document.createElement('div'); card.className='vote-card';
+      if (v.active === false) card.classList.add('vote-card--inactive');
+      if (ended) card.classList.add('vote-card--ended');
+      card.setAttribute('data-voteid', String(v._id));
+
+      // header
+      const header = document.createElement('div'); header.className='vote-card__header';
+      const left = document.createElement('div'); left.className='vote-card__left';
+      // use detail class for description clamp
+      left.innerHTML = `<div class="vote-card__title">${escapeHtml(v.title)}</div><div class="muted vote-detail__desc">${escapeHtml(v.description||'')}</div>`;
+      header.appendChild(left);
+
+      const meta = document.createElement('div'); meta.className='vote-card__meta'; meta.setAttribute('data-endsat', v.endsAt || '');
+      meta.innerHTML = `<div class="vote-card__time">${timeLeftText(v.endsAt)}</div>
+                        <div class="vote-card__totals" style="font-size:13px">Total votes: ${totals.total}${totals.byRole ? ' (' + (totals.byRole.student||0) + ' students' + (totals.byRole.teacher ? ', ' + totals.byRole.teacher + ' teachers' : '') + (totals.byRole.other ? ', ' + totals.byRole.other + ' others' : '') + ')' : ''}</div>`;
+
+      const right = document.createElement('div'); right.className='vote-card__right';
+      right.appendChild(meta);
+
+      // actions: show controls only when API says canEdit === true
+      const actions = document.createElement('div'); actions.className='vote-card__actions';
+      const viewBtn = document.createElement('button'); viewBtn.className='btn'; viewBtn.textContent='Open';
+      viewBtn.addEventListener('click', () => openVote(v._id));
+      actions.appendChild(viewBtn);
+
+      const canEdit = !!v.canEdit;
+      if (canEdit) {
+        const editBtn = document.createElement('button'); editBtn.className='btn btn--outline'; editBtn.textContent='Edit';
+        editBtn.addEventListener('click', ()=> showCreateEditModal(v));
+        actions.appendChild(editBtn);
+        const delBtn = document.createElement('button'); delBtn.className='btn btn--danger'; delBtn.textContent='Delete';
+        delBtn.addEventListener('click', async () => {
+          if (!confirm('Delete this election?')) return;
+          delBtn.disabled = true;
+          try {
+            const r = await apiFetch(`/votes/${v._id}`, { method:'DELETE' });
+            if (!r || !r.ok) { alert('Delete failed: ' + (r && r.error ? r.error : 'server error')); delBtn.disabled=false; return; }
+            await loadList();
+          } catch (err) { console.error('delete vote', err); alert('Delete failed'); delBtn.disabled=false; }
+        });
+        actions.appendChild(delBtn);
+
+        const toggleBtn = document.createElement('button'); toggleBtn.className='btn'; toggleBtn.textContent = v.active === false ? 'Activate' : 'Deactivate';
+        toggleBtn.addEventListener('click', async () => {
+          toggleBtn.disabled = true;
+          try {
+            const rr = await apiFetch(`/votes/${v._id}`, { method:'PATCH', body:{ active: !(v.active === true) }});
+            if (!rr || !rr.ok) { alert('Update failed'); toggleBtn.disabled=false; return; }
+            await loadList();
+          } catch (err) { console.error('toggle active err', err); alert('Update failed'); toggleBtn.disabled=false; }
+        });
+        actions.appendChild(toggleBtn);
+      }
+
+      right.appendChild(actions);
+      header.appendChild(right);
+      card.appendChild(header);
+
+      // candidate preview (thumbnails)
+      const candWrap = document.createElement('div'); candWrap.className = 'vote-card__cands';
+      const totalVotes = Math.max(1, totals.total);
+      (v.candidates || []).slice(0,4).forEach(c => {
+        const votes = Number(c.votes) || 0;
+        const pct = totals.total ? Math.round((votes / totalVotes) * 100) : 0;
+        const el = document.createElement('div'); el.className = 'vote-card__cand';
+
+        let thumbHtml;
+        if (c.photoUrl) {
+          thumbHtml = `<div class="vote-card__cand-thumb"><img src="${escapeHtml(resolvePhotoUrl(c.photoUrl))}" alt="${escapeHtml(c.name||'candidate')}" /></div>`;
+        } else {
+          thumbHtml = `<div class="vote-card__cand-thumb no-photo">No photo</div>`;
+        }
+
+        el.innerHTML = `<div style="display:flex;align-items:flex-start;gap:8px;min-width:0">${thumbHtml}<div style="flex:1;min-width:0">
+                          <div class="vote-card__cand-head" style="display:flex;justify-content:space-between;align-items:flex-start">
+                            <div style="min-width:0">
+                              <div class="vote-card__cand-name" style="font-weight:600">${escapeHtml(c.name || 'Candidate')}</div>
+                              <div class="muted vote-card__cand-title" style="font-size:12px">${escapeHtml(c.title||'')}</div>
+                            </div>
+                            <div class="muted vote-card__cand-votes" style="font-size:12px;text-align:right">${votes} • ${pct}%</div>
+                          </div>
+                          <div class="progress" style="margin-top:8px"><div class="progress__bar" style="width:${pct}%;"></div></div>
+                        </div></div>`;
+        candWrap.appendChild(el);
+      });
+      card.appendChild(candWrap);
+
+      // winner if present
+      if (v.winners && v.winners.length) {
+        const winnerDiv = document.createElement('div'); winnerDiv.className='vote-card__winner';
+        if (v.winners.length === 1) winnerDiv.innerHTML = `<strong>Winner:</strong> ${escapeHtml(v.winners[0].name||'')} — ${escapeHtml(v.winners[0].title||'')} • ${String(v.winners[0].votes||0)} votes`;
+        else winnerDiv.innerHTML = `<strong>Tie:</strong> ${v.winners.map(w => escapeHtml(w.name||'') + ` (${String(w.votes||0)})`).join(', ')}`;
+        card.appendChild(winnerDiv);
+      }
+
+      wrap.appendChild(card);
+    });
+
+    voteList.appendChild(wrap);
+  }
+
+  // ---- Create/Edit modal & photo handling (kept as you had) ----
+  function buildCandidateRowNode(candidatesWrap, init = {}) {
+    const row = document.createElement('div'); row.className = 'candidate-row';
+    row.style.display = 'grid';
+    row.style.gridTemplateColumns = '1fr 1fr 1fr 32px';
+    row.style.gap = '8px';
+    row.style.alignItems = 'center';
+    row.style.marginBottom = '8px';
+    row.style.paddingLeft = '8px';
+    row.style.borderLeft = '3px solid rgba(0,0,0,0.06)';
+
+    const nameInput = document.createElement('input'); nameInput.className='input'; nameInput.placeholder = 'Candidate name or student (type to search)';
+    nameInput.value = init.studentName || init.name || '';
+    const titleInput = document.createElement('input'); titleInput.className='input'; titleInput.placeholder = 'Campaign title';
+    titleInput.value = init.title || '';
+    const descInput = document.createElement('input'); descInput.className='input'; descInput.placeholder = 'Candidate description';
+    descInput.value = init.description || '';
+    const removeBtn = document.createElement('button'); removeBtn.className='btn btn--danger'; removeBtn.type='button'; removeBtn.textContent='✕';
+    removeBtn.title = 'Remove candidate';
+
+    const photoInput = document.createElement('input');
+    photoInput.type = 'file';
+    photoInput.accept = 'image/*';
+    photoInput.capture = 'environment';
+    photoInput.style.display = 'none';
+
+    row.appendChild(nameInput);
+    row.appendChild(titleInput);
+    row.appendChild(descInput);
+    row.appendChild(removeBtn);
+    row.appendChild(photoInput);
+
+    row._candidate = {
+      personId: init.personId || init.studentId || init.teacherId || init._id || null,
+      personType: init.personType || (init.teacherId ? 'teacher' : (init.studentId ? 'student' : null)),
+      studentName: nameInput.value || '',
+      photoFile: null,
+      photoPreviewUrl: init.photoUrl ? resolvePhotoUrl(init.photoUrl) : '',
+      photoUrl: init.photoUrl || ''
+    };
+
+    const suggestions = document.createElement('div'); suggestions.className = 'suggestions'; suggestions.style.display='none'; row.appendChild(suggestions);
+
+    function showSuggestions(arr) {
+      suggestions.innerHTML = ''; if (!arr || !arr.length) { suggestions.style.display='none'; return; }
+      arr.slice(0,20).forEach(s=>{
+        const item = document.createElement('div'); item.className='suggestion-item';
+        item.innerHTML = `<div class="s-name">${escapeHtml(s.fullname||s.name||'')}</div><div class="muted s-id">${escapeHtml(String(s._id||s.id))}</div>`;
+        item.addEventListener('click', ()=>{
+          nameInput.value = s.fullname || s.name || String(s._id||s.id);
+          row._candidate.personId = String(s._id || s.id);
+          row._candidate.studentName = nameInput.value;
+          row._candidate.personType = 'student';
+          suggestions.style.display = 'none';
+        });
+        suggestions.appendChild(item);
+      });
+      suggestions.style.display = 'block';
+    }
+
+    let searchTimer = null;
+    nameInput.addEventListener('input', (e) => {
+      clearTimeout(searchTimer);
+      row._candidate.personId = null;
+      row._candidate.studentName = '';
+      const q = (e.target.value || '').trim();
+      if (!q) { suggestions.style.display = 'none'; return; }
+      searchTimer = setTimeout(async () => {
+        try {
+          const r = await apiFetch(`/students?q=${encodeURIComponent(q)}`).catch(()=>null);
+          const arr = r && (r.students || r.items || []) || [];
+          showSuggestions(arr);
+        } catch (err) { console.warn('student search failed', err); showSuggestions([]); }
+      }, 200);
+    });
+
+    function outsideListener(ev) { if (!row.contains(ev.target)) suggestions.style.display = 'none'; }
+    document.addEventListener('click', outsideListener);
+
+    removeBtn.addEventListener('click', () => {
+      suggestions.remove();
+      document.removeEventListener('click', outsideListener);
+      row.remove();
+      const wrap = row.closest('.candidates-wrap');
+      renderCandidatesPhotosPreview(wrap);
+    });
+
+    nameInput.addEventListener('focus', () => { if (suggestions.children.length) suggestions.style.display = 'block'; });
+
+    photoInput.addEventListener('change', (ev) => {
+      const f = photoInput.files && photoInput.files[0];
+      row._candidate.photoFile = f || null;
+      if (f) {
+        try { row._candidate.photoPreviewUrl = URL.createObjectURL(f); } catch(e) { row._candidate.photoPreviewUrl = ''; }
+        row._candidate.photoUrl = '';
+      } else {
+        row._candidate.photoPreviewUrl = init.photoUrl ? resolvePhotoUrl(init.photoUrl) : '';
+      }
+      const wrap = row.closest('.candidates-wrap');
+      renderCandidatesPhotosPreview(wrap);
+    });
+
+    row._inputs = { nameInput, titleInput, descInput, photoInput };
+
+    return (candidatesWrap ? (candidatesWrap.appendChild(row), row) : row);
+  }
+
+  function renderCandidatesPhotosPreview(candidatesWrap) {
+    if (!candidatesWrap) return;
+    let previewArea = candidatesWrap._photoPreviewArea;
+    if (!previewArea) {
+      previewArea = document.createElement('div');
+      previewArea.style.display = 'flex';
+      previewArea.style.flexWrap = 'wrap';
+      previewArea.style.gap = '10px';
+      previewArea.style.marginTop = '8px';
+      candidatesWrap._photoPreviewArea = previewArea;
+      if (candidatesWrap.parentNode) candidatesWrap.parentNode.appendChild(previewArea);
+    }
+    previewArea.innerHTML = '';
+    const rows = Array.from(candidatesWrap.querySelectorAll('.candidate-row'));
+    rows.forEach((r, idx) => {
+      const meta = r._candidate || {};
+      const box = document.createElement('div');
+      box.style.width = '96px';
+      box.style.height = '140px';
+      box.style.display = 'flex';
+      box.style.flexDirection = 'column';
+      box.style.alignItems = 'center';
+      box.style.justifyContent = 'flex-start';
+      box.style.border = '1px solid #eee';
+      box.style.borderRadius = '8px';
+      box.style.overflow = 'hidden';
+      box.style.fontSize = '12px';
+      box.style.textAlign = 'center';
+      const label = document.createElement('div'); label.style.fontSize='12px'; label.style.margin='6px 0 4px 0'; label.textContent = (r._inputs && r._inputs.nameInput && r._inputs.nameInput.value) ? r._inputs.nameInput.value : `Candidate ${idx+1}`;
+
+      if (meta.photoPreviewUrl) {
+        const img = document.createElement('img');
+        img.src = meta.photoPreviewUrl;
+        img.style.width = '90px'; img.style.height = '64px'; img.style.objectFit = 'cover';
+        img.style.marginTop = '8px';
+        box.appendChild(img);
+      } else if (meta.photoUrl) {
+        const img = document.createElement('img');
+        img.src = resolvePhotoUrl(meta.photoUrl);
+        img.style.width = '90px'; img.style.height = '64px'; img.style.objectFit = 'cover';
+        img.style.marginTop = '8px';
+        box.appendChild(img);
+      } else {
+        const placeholder = document.createElement('div'); placeholder.className='muted'; placeholder.textContent = 'No photo';
+        placeholder.style.marginTop = '24px';
+        box.appendChild(placeholder);
+      }
+      box.appendChild(label);
+
+      const choose = document.createElement('button'); choose.className='btn btn--outline'; choose.style.fontSize='11px'; choose.style.marginTop='8px'; choose.textContent = 'Choose';
+      choose.addEventListener('click', () => {
+        const inp = r.querySelector('input[type=file]');
+        if (inp) inp.click();
+      });
+      box.appendChild(choose);
+
+      const clearBtn = document.createElement('button'); clearBtn.className='btn btn--danger'; clearBtn.style.fontSize='11px'; clearBtn.style.marginTop='6px'; clearBtn.textContent='Clear';
+      clearBtn.addEventListener('click', () => {
+        r._candidate.photoFile = null;
+        r._candidate.photoPreviewUrl = '';
+        r._candidate.photoUrl = '';
+        const inp = r.querySelector('input[type=file]');
+        if (inp) inp.value = '';
+        renderCandidatesPhotosPreview(candidatesWrap);
+      });
+      box.appendChild(clearBtn);
+
+      previewArea.appendChild(box);
+    });
+  }
+
+  function buildCreateEditModal(initial = null) {
+    const isEdit = !!initial;
+    const overlay = document.createElement('div'); overlay.className='modal';
+    const container = document.createElement('div'); container.className='modal__card';
+    overlay.appendChild(container);
+
+    container.innerHTML = `
+      <h3>${isEdit ? 'Edit Election' : 'Create Election'}</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div><label>Title</label><input id="vote-title" class="input" /></div>
+        <div><label>Allowed</label><select id="vote-allowed" class="input"><option value="students">Students</option><option value="teachers">Teachers</option><option value="all">All</option></select></div>
+        <div style="grid-column:1/3"><label>Description</label><textarea id="vote-desc" class="input" rows="3"></textarea></div>
+        <div><label>Starts At</label><input id="vote-starts" type="datetime-local" class="input" /></div>
+        <div><label>Ends At</label><input id="vote-ends" type="datetime-local" class="input" /></div>
+        <div style="grid-column:1/3"><label><input id="vote-active" type="checkbox" /> Active</label></div>
+      </div>
+
+      <div style="margin-top:12px">
+        <h4>Candidates <button id="add-candidate-btn" class="btn btn--outline">+ Add Candidate</button></h4>
+        <div id="candidates-wrap" class="candidates-wrap"></div>
+      </div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button id="cancel-vote-create" class="btn btn--outline">Cancel</button>
+        <button id="save-vote-create" class="btn">${isEdit ? 'Save changes' : 'Save'}</button>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const candidatesWrap = container.querySelector('#candidates-wrap');
+
+    if (initial) {
+      container.querySelector('#vote-title').value = initial.title || '';
+      container.querySelector('#vote-desc').value = initial.description || '';
+      container.querySelector('#vote-allowed').value = normalizeAllowed(initial.allowed || 'students');
+      container.querySelector('#vote-active').checked = initial.active !== false;
+      if (initial.startsAt) container.querySelector('#vote-starts').value = new Date(initial.startsAt).toISOString().slice(0,16);
+      if (initial.endsAt) container.querySelector('#vote-ends').value = new Date(initial.endsAt).toISOString().slice(0,16);
+      (initial.candidates || []).forEach(c => {
+        const r = buildCandidateRowNode(candidatesWrap, { studentId: c.studentId, teacherId: c.teacherId, personId: (c.studentId||c.teacherId||c._id), personType: (c.teacherId ? 'teacher' : (c.studentId ? 'student' : null)), name: c.name, title: c.title, description: c.description, photoUrl: c.photoUrl });
+        if (c.photoUrl) {
+          r._candidate.photoUrl = c.photoUrl;
+          r._candidate.photoPreviewUrl = resolvePhotoUrl(c.photoUrl);
+        }
+      });
+    } else {
+      buildCandidateRowNode(candidatesWrap); buildCandidateRowNode(candidatesWrap);
+    }
+
+    renderCandidatesPhotosPreview(candidatesWrap);
+
+    container.querySelector('#add-candidate-btn').addEventListener('click', (e) => { e.preventDefault(); buildCandidateRowNode(candidatesWrap); renderCandidatesPhotosPreview(candidatesWrap); });
+    container.querySelector('#cancel-vote-create').addEventListener('click', (e) => { e.preventDefault(); overlay.remove(); });
+
+    container.querySelector('#save-vote-create').addEventListener('click', async (e) => {
+      e.preventDefault();
+      const title = container.querySelector('#vote-title').value.trim();
+      const description = container.querySelector('#vote-desc').value.trim();
+      const allowedVal = container.querySelector('#vote-allowed').value;
+      const allowed = normalizeAllowed(allowedVal);
+      const startsAtVal = container.querySelector('#vote-starts').value;
+      const endsAtVal = container.querySelector('#vote-ends').value;
+      const active = container.querySelector('#vote-active').checked;
+      if (!title) return alert('Enter title');
+
+      const candidateRows = Array.from(candidatesWrap.querySelectorAll('.candidate-row'));
+      const candidates = candidateRows.map(r => {
+        const inputs = r._inputs || {};
+        const name = inputs.nameInput ? inputs.nameInput.value.trim() : '';
+        const titleC = inputs.titleInput ? inputs.titleInput.value.trim() : '';
+        const descC = inputs.descInput ? inputs.descInput.value.trim() : '';
+        return {
+          personId: r._candidate && r._candidate.personId ? r._candidate.personId : undefined,
+          personType: r._candidate && r._candidate.personType ? r._candidate.personType : undefined,
+          name: r._candidate && r._candidate.studentName ? r._candidate.studentName : name,
+          title: titleC,
+          description: descC,
+          photoUrl: r._candidate && r._candidate.photoUrl ? r._candidate.photoUrl : undefined
+        };
+      }).filter(c => c.personId || c.name);
+
+      // collect file list in same order (null for missing)
+      const photoFiles = candidateRows.map(r => r._candidate && r._candidate.photoFile ? r._candidate.photoFile : null);
+      const hasFiles = photoFiles.some(f => !!f);
+
+      try {
+        const payload = {
+          title,
+          description,
+          allowed,
+          startsAt: startsAtVal ? new Date(startsAtVal).toISOString() : new Date().toISOString(),
+          endsAt: endsAtVal ? new Date(endsAtVal).toISOString() : new Date(Date.now() + 24*3600*1000).toISOString(),
+          candidates,
+          active
+        };
+
+        if (hasFiles) {
+          const fd = new FormData();
+          fd.append('title', payload.title);
+          fd.append('description', payload.description);
+          fd.append('allowed', payload.allowed);
+          fd.append('startsAt', payload.startsAt);
+          fd.append('endsAt', payload.endsAt);
+          fd.append('active', payload.active ? 'true' : 'false');
+          fd.append('candidates', JSON.stringify(candidates));
+          photoFiles.forEach((f) => { if (f) fd.append('candidatePhotos', f, f.name || 'photo.jpg'); });
+
+          const token = typeof getToken === 'function' ? getToken() : localStorage.getItem('token');
+          const url = isEdit ? `${(typeof API_BASE !== 'undefined' ? API_BASE : '/api')}/votes/${initial._id}` : `${(typeof API_BASE !== 'undefined' ? API_BASE : '/api')}/votes`;
+          const method = isEdit ? 'PATCH' : 'POST';
+          const headers = {};
+          if (token) headers['Authorization'] = 'Bearer ' + token;
+          const res = await fetch(url, { method, headers, body: fd });
+          const ct = res.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
+            const jr = await res.json();
+            if (!jr || !jr.ok) { alert('Failed to save vote: ' + (jr && jr.error ? jr.error : 'server error')); return; }
+          } else {
+            const text = await res.text();
+            throw new Error(text.slice(0,200));
+          }
+        } else {
+          if (isEdit && initial && initial._id) {
+            const r = await apiFetch(`/votes/${initial._id}`, { method:'PATCH', body: payload });
+            if (!r || !r.ok) { alert('Failed to update vote: ' + (r && r.error ? r.error : 'server error')); return; }
+          } else {
+            const r = await apiFetch('/votes', { method:'POST', body: payload });
+            if (!r || !r.ok) { alert('Failed to create vote: ' + (r && r.error ? r.error : 'server error')); return; }
+          }
+        }
+
+        overlay.remove();
+        await loadList();
+      } catch (err) {
+        console.error('save vote error', err);
+        alert('Save failed: ' + (err && err.message ? err.message : 'server error'));
+      }
+    });
+
+    return overlay;
+  }
+
+  function showCreateEditModal(initial = null) {
+    const curRole = (curUser.role || '').toLowerCase();
+    if (!['admin','manager'].includes(curRole)) { alert('Only admin/manager can perform this action'); return; }
+    if (initial && curRole === 'manager' && String(initial.createdBy || '') !== String(curUser._id)) {
+      alert('You cannot edit this vote');
+      return;
+    }
+    const node = buildCreateEditModal(initial);
+    document.body.appendChild(node);
+  }
+
+  // open vote detail
+  async function openVote(id) {
+    const r = await apiFetch(`/votes/${id}`).catch(()=>null);
+    if (!r || !r.ok) return alert('Failed to load election');
+    const vote = r.vote || r.json || r;
+    if (!vote) return alert('Vote not found');
+
+    listMounted = false;
+    if (window.__votePollTimer) { clearInterval(window.__votePollTimer); window.__votePollTimer = null; }
+
+    app.innerHTML = '';
+    const container = document.createElement('div'); container.className = 'vote-detail';
+    const header = document.createElement('div'); header.className='vote-detail__header';
+    header.innerHTML = `<div><h3 class="vote-detail__title">${escapeHtml(vote.title)}</h3><div class="muted">${escapeHtml(vote.description||'')}</div></div>`;
+    const right = document.createElement('div'); right.className='vote-detail__controls';
+
+    const back = document.createElement('button'); back.className='btn btn--outline'; back.textContent='Back';
+    back.addEventListener('click', async () => { listMounted = true; if (window.__voteRefreshTimer) { clearInterval(window.__voteRefreshTimer); window.__voteRefreshTimer = null; } if (window.__votePollTimer) { clearInterval(window.__votePollTimer); window.__votePollTimer = null; } await renderVote(); });
+    right.appendChild(back);
+
+    const curRole = (curUser.role || '').toLowerCase();
+    const isAdmin = curRole === 'admin';
+    const isManager = curRole === 'manager';
+    const createdByMe = String(vote.createdBy || '') === String(curUser._id);
+    const canEdit = !!vote.canEdit;
+
+    if (canEdit) {
+      const editBtn = document.createElement('button'); editBtn.className='btn btn--outline'; editBtn.textContent='Edit';
+      editBtn.addEventListener('click', () => showCreateEditModal(vote));
+      right.appendChild(editBtn);
+
+      const delBtn = document.createElement('button'); delBtn.className='btn btn--danger'; delBtn.textContent='Delete';
+      delBtn.addEventListener('click', async () => {
+        if (!confirm('Delete this election?')) return;
+        delBtn.disabled = true;
+        try {
+          const rr = await apiFetch(`/votes/${vote._id}`, { method:'DELETE' });
+          if (!rr || !rr.ok) { alert('Delete failed'); delBtn.disabled=false; return; }
+          await renderVote();
+        } catch (err) { console.error('delete', err); alert('Delete failed'); delBtn.disabled=false; }
+      });
+      right.appendChild(delBtn);
+
+      const toggleActive = document.createElement('button'); toggleActive.className='btn';
+      toggleActive.textContent = vote.active === false ? 'Activate' : 'Deactivate';
+      toggleActive.addEventListener('click', async () => {
+        toggleActive.disabled = true;
+        try {
+          const rr = await apiFetch(`/votes/${vote._id}`, { method:'PATCH', body: { active: !(vote.active === true) }});
+          if (!rr || !rr.ok) { alert('Update failed'); toggleActive.disabled=false; return; }
+          openVote(vote._id);
+        } catch (err) { console.error('toggle', err); alert('Update failed'); toggleActive.disabled=false; }
+      });
+      right.appendChild(toggleActive);
+    }
+
+    header.appendChild(right);
+    container.appendChild(header);
+
+    const topInfo = document.createElement('div'); topInfo.className='vote-detail__top';
+    const timeNode = document.createElement('div'); timeNode.className='vote-detail__time-wrap';
+    const dataNode = document.createElement('div'); dataNode.setAttribute('data-detail-endsat', vote.endsAt || '');
+    dataNode.innerHTML = `<div class="muted">Ends: ${vote.endsAt ? new Date(vote.endsAt).toLocaleString() : 'No end'}</div><div class="vote-detail__time">${timeLeftText(vote.endsAt)}</div>`;
+    dataNode._onEnded = () => { openVote(vote._id); };
+    timeNode.appendChild(dataNode);
+    topInfo.appendChild(timeNode);
+    container.appendChild(topInfo);
+
+    const comp = computeRankingClientSide(vote.candidates || []);
+    const ranking = vote.ranking || comp.ranking;
+    const winners = vote.winners || comp.winners;
+
+    if (timeLeftMs(vote.endsAt) <= 0) {
+      if (winners && winners.length) {
+        const winBanner = document.createElement('div'); winBanner.className='vote-banner vote-banner--winner';
+        if (winners.length === 1) {
+          winBanner.innerHTML = `<strong>Election ended — Winner</strong><div style="margin-top:6px">${escapeHtml(winners[0].name||'')} — ${escapeHtml(winners[0].title||'')}</div><div class="muted">Total votes: ${String(winners[0].votes||0)}</div>`;
+        } else {
+          winBanner.innerHTML = `<strong>Election ended — Tie</strong><div style="margin-top:6px">Tie between: ${winners.map(w => escapeHtml(w.name||'') + ` (${String(w.votes||0)})`).join(', ')}</div>`;
+        }
+        container.appendChild(winBanner);
+      }
+    } else if (timeLeftMs(vote.endsAt) <= (60*60*1000)) {
+      const warn = document.createElement('div'); warn.className='vote-banner vote-banner--soon';
+      warn.innerHTML = `<strong>Ending soon</strong><div class="muted">Time left: ${timeLeftText(vote.endsAt)}</div>`;
+      container.appendChild(warn);
+    }
+
+    const totals = computeTotals(vote);
+    const totalsNode = document.createElement('div'); totalsNode.className = 'vote-detail__totals';
+    totalsNode.innerHTML = `<strong>Total votes:</strong> ${totals.total}${totals.byRole ? ' — ' + (totals.byRole.student||0) + ' students' + (totals.byRole.teacher ? ', ' + totals.byRole.teacher + ' teachers' : '') + (totals.byRole.other ? ', ' + totals.byRole.other + ' others' : '') : ''}`;
+    container.appendChild(totalsNode);
+
+    const grid = document.createElement('div'); grid.className='vote-grid';
+    const alreadyVoted = Array.isArray(vote.voters) && vote.voters.some(vt => { try { return String(vt.voterId) === String(curUser._id); } catch(e) { return false; } });
+    const nowActive = isVoteActive(vote);
+    const allowedNormalized = normalizeAllowed(vote.allowed);
+    const userRoleNormalized = normalizeUserRole(curUser.role);
+
+    ranking.forEach(c => {
+      const card = document.createElement('div'); card.className='candidate-card';
+      if (c.rank) card.style.cssText += (c.rank === 1 ? 'background:linear-gradient(90deg,#FFD70022,#FFD70011);' : '');
+      let photoHtml = '';
+      if (c.photoUrl) {
+        photoHtml = `<div class="candidate-card__photo-wrap"><img class="candidate-card__photo" src="${escapeHtml(resolvePhotoUrl(c.photoUrl))}" alt="${escapeHtml(c.name||'candidate')}" /></div>`;
+      } else {
+        photoHtml = `<div class="candidate-card__photo-wrap"><div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#888">No photo</div></div>`;
+      }
+      card.innerHTML = `${photoHtml}
+                        <div class="candidate-card__name" style="font-weight:700">${escapeHtml(c.name || 'Candidate')}</div>
+                        <div class="muted candidate-card__title">${escapeHtml(c.title||'')}</div>
+                        <div class="candidate-card__desc">${escapeHtml(c.description||'')}</div>
+                        <div class="candidate-card__votes">${c.votes||0} votes</div>
+                        <div class="muted candidate-card__rank">Rank: ${c.rank || '-'}</div>`;
+
+      let canVote = nowActive && !alreadyVoted;
+      if (canVote) {
+        if (allowedNormalized === 'all') canVote = true;
+        else if (allowedNormalized === 'students') canVote = (userRoleNormalized === 'student');
+        else if (allowedNormalized === 'teachers') canVote = (userRoleNormalized === 'teacher');
+      }
+      if (canVote) {
+        const voteBtn = document.createElement('button'); voteBtn.className='btn'; voteBtn.textContent='Vote';
+        voteBtn.addEventListener('click', async () => {
+          if (!confirm(`Confirm vote for ${c.name || 'candidate'}?`)) return;
+          voteBtn.disabled = true; voteBtn.textContent = 'Voting...';
+          try {
+            const rr = await apiFetch(`/votes/${vote._id}/vote`, { method:'POST', body:{ candidateId: c._id }});
+            if (!rr || !rr.ok) { alert('Vote failed: ' + (rr && rr.error ? rr.error : 'server error')); voteBtn.disabled=false; voteBtn.textContent='Vote'; return; }
+            alert('Voted successfully');
+            openVote(vote._id);
+          } catch (err) { console.error('vote err', err); alert('Vote failed'); voteBtn.disabled=false; voteBtn.textContent='Vote'; }
+        });
+        card.appendChild(voteBtn);
+      } else {
+        const info = document.createElement('div'); info.className='muted'; info.style.marginTop='8px';
+        if (!nowActive) info.textContent = 'Voting closed/not started';
+        else if (alreadyVoted) info.textContent = 'You have already voted';
+        else info.textContent = 'You are not eligible to vote';
+        card.appendChild(info);
+      }
+
+      grid.appendChild(card);
+    });
+
+    container.appendChild(grid);
+
+    // results
+    const resultsBox = document.createElement('div'); resultsBox.className='results-box';
+    resultsBox.innerHTML = `<h4>Results</h4>`;
+    const resList = document.createElement('div'); resList.className='results-list';
+    const totalVotes = Math.max(1, totals.total);
+    ranking.forEach((c) => {
+      const votes = Number(c.votes) || 0;
+      const pct = totals.total ? Math.round((votes / totalVotes) * 100) : 0;
+      const rrow = document.createElement('div'); rrow.className='results-row';
+      rrow.innerHTML = `<div class="results-row__label">${c.rank}. ${escapeHtml(c.name || '')} — ${escapeHtml(c.title || '')}</div>
+                        <div class="results-row__value">${votes} • ${pct}%</div>
+                        <div class="progress"><div class="progress__bar" style="width:${pct}%;"></div></div>`;
+      resList.appendChild(rrow);
+    });
+    resultsBox.appendChild(resList);
+    container.appendChild(resultsBox);
+
+    container.appendChild(dataNode);
+    app.appendChild(container);
+
+    if (!window.__voteRefreshTimer) startLiveTimer();
+  }
+
+  // wire create
+  createBtn?.addEventListener('click', () => showCreateEditModal(null));
+
+  // start
+  await loadList();
+}

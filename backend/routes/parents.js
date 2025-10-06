@@ -10,11 +10,16 @@ const roles = require('../middleware/roles');
 const Parent = require('../models/Parent');
 const Student = require('../models/Student');
 
+const crypto = require('crypto'); 
 const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 const JWT_EXPIRES = process.env.JWT_EXPIRES || '7d';
 
 function isObjectIdString(s) {
   return typeof s === 'string' && mongoose.Types.ObjectId.isValid(s);
+}
+function isSameId(a, b) {
+  if (!a || !b) return false;
+  return String(a) === String(b);
 }
 
 /**
@@ -25,21 +30,24 @@ function isObjectIdString(s) {
  */
 router.post('/', auth, roles(['admin','manager']), async (req, res) => {
   try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ ok:false, message: 'Your account is not allowed to perform this action' });
+
     const { fullname, phone, studentNumberId, password } = req.body || {};
     if (!fullname || !studentNumberId || !password) {
       return res.status(400).json({ ok: false, message: 'fullname, studentNumberId and password are required' });
     }
 
-    const student = await Student.findOne({ numberId: String(studentNumberId).trim() }).lean();
+    const student = await Student.findOne({ numberId: String(studentNumberId).trim(), deleted: { $ne: true } }).lean();
     if (!student) {
       return res.status(400).json({ ok: false, message: `Student ${String(studentNumberId)} does not exist` });
     }
 
-    // avoid exact duplicates
+    // avoid exact duplicates (ignore already-deleted parents)
     const exists = await Parent.findOne({
       childStudent: student._id,
       fullname: fullname.trim(),
-      phone: phone ? String(phone).trim() : undefined
+      phone: phone ? String(phone).trim() : undefined,
+      deleted: { $ne: true }
     }).lean();
 
     if (exists) {
@@ -86,10 +94,11 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ ok: false, message: 'studentNumberId and password required' });
     }
 
-    const student = await Student.findOne({ numberId: studentNumberId }).lean();
+    const student = await Student.findOne({ numberId: studentNumberId, deleted: { $ne: true } }).lean();
     if (!student) return res.status(400).json({ ok: false, message: 'Student not found' });
 
-    const parents = await Parent.find({ childStudent: student._id }).lean();
+    // consider only non-deleted parents
+    const parents = await Parent.find({ childStudent: student._id, deleted: { $ne: true } }).lean();
     if (!parents || parents.length === 0) return res.status(400).json({ ok: false, message: 'No parent account linked to this student' });
 
     let matchedParent = null;
@@ -118,12 +127,19 @@ router.post('/login', async (req, res) => {
 /**
  * GET /api/parents
  * List parents (admin/manager).
- * Optional: ?search=term  => searches fullname / phone / childNumberId
  */
 router.get('/', auth, roles(['admin','manager']), async (req, res) => {
   try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ ok:false, message: 'Your account is not allowed to perform this action' });
+
     const q = (req.query && req.query.search) ? String(req.query.search).trim() : '';
-    const filter = {};
+    const filter = { deleted: { $ne: true } };
+
+    // If manager, restrict to parents created by this manager
+    if (req.user && String((req.user.role || '').toLowerCase()) === 'manager') {
+      filter.createdBy = req.user._id;
+    }
+
     if (q) {
       const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       filter.$or = [
@@ -132,6 +148,7 @@ router.get('/', auth, roles(['admin','manager']), async (req, res) => {
         { childNumberId: rx }
       ];
     }
+
     const parents = await Parent.find(filter).populate('childStudent', 'fullname numberId').limit(2000).lean();
     const out = parents.map(p => ({
       _id: String(p._id),
@@ -139,7 +156,8 @@ router.get('/', auth, roles(['admin','manager']), async (req, res) => {
       phone: p.phone,
       childStudent: p.childStudent ? { _id: String(p.childStudent._id), fullname: p.childStudent.fullname, numberId: p.childStudent.numberId } : null,
       childNumberId: p.childNumberId || null,
-      createdAt: p.createdAt
+      createdAt: p.createdAt,
+      createdBy: p.createdBy ? String(p.createdBy) : null
     }));
     return res.json({ ok: true, parents: out });
   } catch (err) {
@@ -150,13 +168,12 @@ router.get('/', auth, roles(['admin','manager']), async (req, res) => {
 
 /**
  * GET /api/parents/me
- * Return current parent info (auth)
  */
 router.get('/me', auth, async (req, res) => {
   try {
     if (!req.user) return res.status(401).json({ ok: false, message: 'Auth required' });
     if (String((req.user.role || '').toLowerCase()) !== 'parent') return res.status(403).json({ ok: false, message: 'Not a parent' });
-    const p = await Parent.findById(req.user._id).populate('childStudent', 'fullname numberId schoolId').lean();
+    const p = await Parent.findOne({ _id: req.user._id, deleted: { $ne: true } }).populate('childStudent', 'fullname numberId schoolId').lean();
     if (!p) return res.status(404).json({ ok: false, message: 'Parent not found' });
     return res.json({ ok: true, parent: p });
   } catch (err) {
@@ -167,23 +184,35 @@ router.get('/me', auth, async (req, res) => {
 
 /**
  * GET /api/parents/:id
- * Admin/manager or the parent themselves (auth). Parent can fetch own record.
  */
 router.get('/:id', auth, async (req, res) => {
   try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ ok:false, message: 'Your account is not allowed to perform this action' });
+
     const id = req.params.id;
     if (!id || !isObjectIdString(id)) return res.status(400).json({ ok: false, message: 'Invalid id' });
 
-    const p = await Parent.findById(id).populate('childStudent','fullname numberId').lean();
+    const p = await Parent.findOne({ _id: id, deleted: { $ne: true } }).populate('childStudent','fullname numberId').lean();
     if (!p) return res.status(404).json({ ok: false, message: 'Not found' });
 
-    // allow admin/manager or the parent in token
-    if (req.user && (req.user.role === 'admin' || req.user.role === 'manager')) {
+    // admin sees any parent
+    if (req.user && (req.user.role === 'admin')) {
       return res.json({ ok: true, parent: p });
     }
+
+    // manager sees only parents they created
+    if (req.user && (String((req.user.role || '').toLowerCase()) === 'manager')) {
+      if (p.createdBy && isSameId(p.createdBy, req.user._id)) {
+        return res.json({ ok: true, parent: p });
+      }
+      return res.status(403).json({ ok: false, message: 'Forbidden' });
+    }
+
+    // parent can fetch own record
     if (req.user && req.user.role === 'parent' && String(req.user._id) === String(p._id)) {
       return res.json({ ok: true, parent: p });
     }
+
     return res.status(403).json({ ok: false, message: 'Forbidden' });
   } catch (err) {
     console.error('GET /parents/:id error', err && err.stack ? err.stack : err);
@@ -192,20 +221,33 @@ router.get('/:id', auth, async (req, res) => {
 });
 
 /**
- * PUT /api/parents/:id - update (parent can update their name/phone/password)
- * Admin/manager can update any parent.
- * Body: { fullname?, phone?, password? }
+ * PUT /api/parents/:id - update
  */
 router.put('/:id', auth, async (req, res) => {
   try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ ok:false, message: 'Your account is not allowed to perform this action' });
+
     const id = req.params.id;
     if (!id || !isObjectIdString(id)) return res.status(400).json({ ok: false, message: 'Invalid id' });
 
     const p = await Parent.findById(id);
-    if (!p) return res.status(404).json({ ok: false, message: 'Not found' });
+    if (!p || p.deleted) return res.status(404).json({ ok: false, message: 'Not found' });
 
-    // permission: admin/manager or parent themself
-    if (!(req.user && (req.user.role === 'admin' || req.user.role === 'manager' || (req.user.role === 'parent' && String(req.user._id) === String(p._id))))) {
+    // permission: admin OR (manager who created this parent) OR parent themself
+    if (req.user) {
+      const role = String((req.user.role || '').toLowerCase());
+      if (role === 'admin') {
+        // allowed
+      } else if (role === 'manager') {
+        if (!p.createdBy || !isSameId(p.createdBy, req.user._id)) {
+          return res.status(403).json({ ok: false, message: 'Forbidden' });
+        }
+      } else if (role === 'parent' && String(req.user._id) === String(p._id)) {
+        // allowed (parent updating themself)
+      } else {
+        return res.status(403).json({ ok: false, message: 'Forbidden' });
+      }
+    } else {
       return res.status(403).json({ ok: false, message: 'Forbidden' });
     }
 
@@ -230,18 +272,119 @@ router.put('/:id', auth, async (req, res) => {
 });
 
 /**
- * DELETE /api/parents/:id - admin/manager only
+ * DELETE /api/parents/:id - soft-delete
  */
 router.delete('/:id', auth, roles(['admin','manager']), async (req, res) => {
   try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ ok:false, message: 'Your account is not allowed to perform this action' });
+
     const id = req.params.id;
     if (!id || !isObjectIdString(id)) return res.status(400).json({ ok: false, message: 'Invalid id' });
-    await Parent.findByIdAndDelete(id);
-    return res.json({ ok: true });
+
+    const p = await Parent.findById(id);
+    if (!p) return res.status(404).json({ ok: false, message: 'Not found' });
+    if (p.deleted) return res.json({ ok: true, alreadyDeleted: true });
+
+    // if manager, ensure they created this parent
+    if (req.user && String((req.user.role || '').toLowerCase()) === 'manager') {
+      if (!p.createdBy || !isSameId(p.createdBy, req.user._id)) {
+        return res.status(403).json({ ok: false, message: 'Forbidden' });
+      }
+    }
+
+    // soft-delete
+    p.deleted = true;
+    p.deletedAt = new Date();
+    p.deletedBy = { id: req.user._id, role: req.user.role, name: (req.user.fullname || req.user.name || '') };
+    await p.save();
+
+    return res.json({ ok: true, deleted: 'soft' });
   } catch (err) {
     console.error('DELETE /parents/:id error', err && err.stack ? err.stack : err);
     return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });
 
+// -----------------------
+// Reset password (admin/manager) for parent
+// -----------------------
+router.post('/:id/reset-password', auth, roles(['admin','manager']), async (req, res) => {
+  try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+
+    const id = req.params.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+
+    const parent = await Parent.findById(id);
+    if (!parent) return res.status(404).json({ message: 'Parent not found' });
+
+    if (req.user.role === 'manager' && String(parent.createdBy) !== String(req.user._id)) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const len = Math.max(8, Math.min(24, parseInt(req.body.length || 10, 10)));
+    let temp = crypto.randomBytes(Math.ceil(len * 0.75)).toString('base64').replace(/[+/=]/g, '').slice(0, len);
+    if (!/[0-9]/.test(temp)) temp = temp.slice(0, -1) + Math.floor(Math.random()*10);
+    if (!/[a-zA-Z]/.test(temp)) temp = temp.slice(0, -1) + 'A';
+
+    const hash = await bcrypt.hash(temp, 10);
+    parent.passwordHash = hash;
+    parent.mustChangePassword = true;
+    await parent.save();
+
+    return res.json({ ok: true, tempPassword: temp, message: 'Temporary password generated — return it once to the caller.' });
+  } catch (err) {
+    console.error('POST /parents/:id/reset-password error', err && err.stack ? err.stack : err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// -----------------------
+// Change password (self or admin/manager) for parent
+// -----------------------
+router.post('/:id/change-password', auth, roles(['admin','manager','parent']), async (req, res) => {
+  try {
+    if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+
+    const id = req.params.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+
+    const { currentPassword, newPassword } = req.body || {};
+    if (!newPassword || String(newPassword).length < 6) return res.status(400).json({ message: 'New password required (min 6 chars)' });
+
+    const parent = await Parent.findById(id);
+    if (!parent) return res.status(404).json({ message: 'Parent not found' });
+
+    if (req.user.role === 'parent') {
+      if (String(req.user._id) !== String(parent._id)) return res.status(403).json({ message: 'Forbidden' });
+      if (!currentPassword) return res.status(400).json({ message: 'Current password required' });
+      const match = parent.passwordHash ? await bcrypt.compare(currentPassword, parent.passwordHash) : false;
+      if (!match) return res.status(400).json({ message: 'Current password is incorrect' });
+      parent.passwordHash = await bcrypt.hash(newPassword, 10);
+      parent.mustChangePassword = false;
+      await parent.save();
+      return res.json({ ok: true, message: 'Password changed' });
+    }
+
+    if (['admin','manager'].includes(req.user.role)) {
+      if (req.user.role === 'manager' && String(parent.createdBy) !== String(req.user._id)) {
+        return res.status(403).json({ message: 'Forbidden' });
+      }
+      parent.passwordHash = await bcrypt.hash(newPassword, 10);
+      parent.mustChangePassword = false;
+      await parent.save();
+      return res.json({ ok: true, message: 'Password updated by admin/manager' });
+    }
+
+    return res.status(403).json({ message: 'Forbidden' });
+  } catch (err) {
+    console.error('POST /parents/:id/change-password error', err && (err.stack || err));
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 module.exports = router;
+
+
+
+
