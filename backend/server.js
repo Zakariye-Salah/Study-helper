@@ -3,6 +3,7 @@
 
 const express = require('express');
 const mongoose = require('mongoose');
+
 const cors = require('cors');
 const compression = require('compression');
 const fs = require('fs');
@@ -141,14 +142,6 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(()=> console.log('MongoDB connected'))
   .catch(err => console.error('MongoDB connect error', err));
 
-// create server + socket.io (unchanged)
-// const server = http.createServer(app);
-// const { Server } = require('socket.io');
-// const io = new Server(server, {
-//   cors: { origin: allowedOrigins, methods: ['GET','POST'], credentials: true },
-//   pingInterval: 25000, pingTimeout: 60000
-// });
-
 // allow Netlify preview domains in addition to configured origins
 const netlifyPreviewRegex = /\.netlify\.app$/i;
 
@@ -182,6 +175,11 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions)); // respond to preflight
+
+// --- create HTTP server and make sure Socket.IO Server constructor is available ---
+// this must be before we call `new Server(server, ...)`
+const server = http.createServer(app);
+const { Server } = require('socket.io');
 
 // Create Socket.IO with same origin rules (function-based)
 const io = new Server(server, {
@@ -347,6 +345,5 @@ server.listen(PORT, () => {
   console.log('Server running on port', PORT);
   console.log('Socket.IO ready');
 });
-
 
 // --- Socket auth middleware (token-based) ---
