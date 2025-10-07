@@ -3,8 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>School Manager</title>
+  <title>waxbarohub</title>
   <link rel="stylesheet" href="css/style.css" />
+  
+
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     /* Minimal professional responsive CSS (you can replace with your theme) */
@@ -110,21 +112,19 @@
   </template>
   <template id="tpl-game">
     <section class="page math-game-page" style="padding:18px;max-width:1200px;margin:0 auto;">
-      <!-- Header — normal (not sticky) so it stays in normal flow -->
-      <div class="game-header" aria-hidden="false">
-        <div class="game-header-inner">
-          <div class="title-block">
-            <h2 class="page-title">Math Games</h2>
-            <div class="page-sub">Practice, learn and compete — all in one place</div>
+      <!-- Header removed per request -->
+  
+      <!-- Main content area: single-page panels -->
+      <div id="game-root" class="game-root">
+        <!-- top area: small page heading + controls now inside content -->
+        <div class="game-top card" style="margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; gap:12px;">
+          <div>
+            <h2 class="page-title" style="margin:0 0 4px 0; font-size:20px; font-weight:800;">Math Games</h2>
+            <div class="page-sub" style="color:var(--muted); font-size:13px;">Practice, learn and compete — all in one place</div>
           </div>
   
-          <div class="controls-block">
-            <!-- Filters separated from the tab row so they do not push/hide tabs -->
+          <div class="controls-block" style="display:flex; gap:12px; align-items:center;">
             <div class="filters" role="region" aria-label="Filters">
-              <!-- <select id="game-class-filter" class="input select-sm" aria-label="Choose class">
-                <option value="">All classes</option>
-              </select> -->
-  
               <select id="game-period-filter" class="input select-sm" aria-label="Choose period">
                 <option value="all">All-time</option>
                 <option value="7">Last 7 days</option>
@@ -143,10 +143,7 @@
             </div>
           </div>
         </div>
-      </div>
   
-      <!-- Main content area: single-page panels -->
-      <div id="game-root" class="game-root">
         <!-- Games panel -->
         <main id="panel-games" class="panel active-panel" role="region" aria-label="Games">
           <div class="left-col">
@@ -205,42 +202,17 @@
         </section>
       </div>
   
-      <!-- Modal root (all modals will be appended here by JS) -->
+      <!-- Modal root -->
       <div id="math-game-modal-root" aria-hidden="true" style="display:block;pointer-events:none"></div>
   
       <style>
         :root { --accent: #2563eb; --muted: #6b7280; --card-bg:#fff; --shadow: 0 10px 30px rgba(2,6,23,0.06); }
   
-        /* HEADER: **not sticky** — normal flow */
-        .game-header {
-          position: relative;   /* <-- normal (not fixed/sticky) */
-          z-index: 40;          /* low so off-canvas menus appear above it */
-          background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(250,250,250,0.95));
-          padding: 8px 0 12px 0;
-          transition: opacity .18s ease, transform .18s ease;
-        }
+        /* game top (replaces previous header) */
+        .game-top { background:transparent; padding:12px 14px; border-radius:8px; display:flex; align-items:center; justify-content:space-between; }
   
-        /* If site opens a global nav/offcanvas, hide the local game header to avoid overlap */
-        body.sidebar-open .game-header,
-        body.offcanvas-open .game-header,
-        body.nav-open .game-header,
-        body.menu-open .game-header,
-        body.mm-open .game-header,
-        #nav.open ~ .container .game-header {
-          display: none !important;
-          pointer-events: none;
-          opacity: 0;
-          transform: translateY(-6px);
-        }
-  
-        .game-header-inner { display:flex; justify-content:space-between; gap:16px; align-items:center; max-width:1200px; margin:0 auto; padding:6px 12px; box-sizing:border-box; }
-        .title-block .page-title { margin:0; font-size:20px; font-weight:800; color:#0f172a; }
-        .page-sub { color:var(--muted); font-size:13px; margin-top:6px; }
-  
-        .controls-block { display:flex; gap:18px; align-items:center; margin-left:auto; width:100%; justify-content:flex-end; }
-        .filters { display:flex; gap:8px; align-items:center; margin-right:8px; min-width:220px; }
-  
-        .select-sm { padding:8px 8px; border-radius:8px; border:1px solid #e6edf3; background:var(--card-bg); min-width:120px; }
+        .page-title { color: #0f172a; }
+        .page-sub { color: var(--muted); font-size:13px; }
   
         /* nav row — horizontal scroll on small screens */
         .nav-wrapper { display:flex; align-items:center; min-width:0; max-width:720px; }
@@ -251,7 +223,7 @@
         .nav-btn.active { background: linear-gradient(90deg,var(--accent),#7c3aed); color:#fff; box-shadow:0 8px 20px rgba(37,99,235,0.12); }
   
         /* layout */
-        .game-root { display:flex; flex-direction:column; gap:12px; margin-top:18px; max-width:1200px; margin-left:auto; margin-right:auto; }
+        .game-root { display:flex; flex-direction:column; gap:12px; margin-top:8px; max-width:1200px; margin-left:auto; margin-right:auto; }
         .panel { display:flex; gap:16px; align-items:flex-start; }
         .panel .left-col { flex:1; min-width:0; }
         .panel .right-col { width:360px; flex:0 0 360px; }
@@ -269,23 +241,21 @@
         .answer-btn, .btn { border-radius:8px; padding:8px 10px; cursor:pointer; }
   
         .leaderboard-card { position:relative; }
-  
         .panel[hidden] { display:none !important; }
   
         @media(max-width:900px) {
           .panel { flex-direction:column-reverse; }
           .panel .right-col { width:100%; flex:auto; }
-          .game-header-inner { padding:8px; flex-direction:column; gap:12px; align-items:flex-start; }
+          .game-top { flex-direction:column; align-items:flex-start; gap:12px; }
           .nav-wrapper { width:100%; }
           .nav-buttons { width:100%; padding-top:6px; }
         }
         @media(max-width:520px) {
           .nav-btn { padding:6px 10px; font-size:14px; }
           .page-title { font-size:18px; }
-          .filters{ min-width:unset; gap:6px; }
         }
   
-        /* make modal root inert by default; modals inserted into it will be visible */
+        /* modal root inert default */
         #math-game-modal-root { pointer-events:none; }
         #math-game-modal-root > .modal { pointer-events:auto; }
   
@@ -571,56 +541,265 @@
 
 
 
-
-  <template id="tpl-students">
-    <section class="page">
-      <h2>Students <button id="add-student-btn" class="btn">Add Student</button></h2>
-  
-      <!-- Collapsible create form (hidden by default) -->
-      <div id="create-student-panel" style="display:none;margin:12px 0;border:1px solid #e6e6e6;padding:12px;border-radius:8px;background:#fff;">
-        <h3 style="margin:0 0 8px 0">Create Student</h3>
-        <form id="create-student-form" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-          <div style="display:flex;flex-direction:column">
-            <label style="font-size:13px;margin-bottom:6px">Full name</label>
-            <input name="fullname" placeholder="Full name" required />
-          </div>
-  
-          <div style="display:flex;flex-direction:column">
-            <label style="font-size:13px;margin-bottom:6px">Phone</label>
-            <input name="phone" placeholder="Phone" />
-          </div>
-  
-          <div style="display:flex;flex-direction:column">
-            <label style="font-size:13px;margin-bottom:6px">Number ID (optional)</label>
-            <input name="numberId" placeholder="Leave empty to auto-generate" />
-          </div>
-  
-          <div style="display:flex;flex-direction:column">
-            <label style="font-size:13px;margin-bottom:6px">Password (optional)</label>
-            <input name="password" placeholder="Password (leave blank to generate)" />
-            <small class="muted">If left blank, the server will create a one-time password and return it once.</small>
-          </div>
-  
-          <div style="grid-column:1 / -1; display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
-            <button id="create-student-cancel" type="button" class="btn btn--outline">Cancel</button>
-            <button id="create-student-submit" type="submit" class="btn">Create student</button>
-          </div>
-        </form>
-        <div id="create-student-feedback" style="margin-top:8px;font-size:13px;color:#d00;display:none"></div>
+<template id="tpl-students">
+  <section class="page students-page" style="padding:16px;max-width:1100px;margin:0 auto;">
+    <div class="students-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;">
+      <div>
+        <h2 style="margin:0;font-size:20px;font-weight:800">Students</h2>
+        <div class="muted" style="font-size:13px;margin-top:6px">Manage students: add, edit, reset password, or remove.</div>
       </div>
-  
-      <input id="student-search" placeholder="Search by name or id" />
-      <div id="students-list"></div>
-    </section>
-  </template>
-  
-  <template id="tpl-teachers">
-    <section class="page">
-      <h2>Teachers <button id="add-teacher-btn" class="btn">Add Teacher</button></h2>
-      <input id="teacher-search" placeholder="Search by name or id" />
-      <div id="teachers-list"></div>
-    </section>
-  </template>
+
+      <!-- Desktop / tablet Add Student -->
+      <div style="display:flex;gap:8px;align-items:center">
+        <button id="add-student-btn" class="btn btn-primary" title="Add student" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;">
+          <!-- plus icon -->
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="btn-text">Add Student</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Collapsible create form (hidden by default) -->
+    <div id="create-student-panel" class="card create-panel" style="display:none;margin:8px 0 14px;border-radius:10px;padding:12px;background:#fff;border:1px solid rgba(15,23,42,0.04)">
+      <h3 style="margin:0 0 8px 0">Create Student</h3>
+      <form id="create-student-form" style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;">
+        <div style="display:flex;flex-direction:column">
+          <label class="field-label">Full name</label>
+          <input name="fullname" placeholder="Full name" required />
+        </div>
+
+        <div style="display:flex;flex-direction:column">
+          <label class="field-label">Phone</label>
+          <input name="phone" placeholder="Phone" />
+        </div>
+
+        <div style="display:flex;flex-direction:column">
+          <label class="field-label">Number ID (optional)</label>
+          <input name="numberId" placeholder="Leave empty to auto-generate" />
+        </div>
+
+        <div style="display:flex;flex-direction:column">
+          <label class="field-label">Password (optional)</label>
+          <input name="password" placeholder="Password (leave blank to generate)" />
+          <small class="muted">If left blank, the server will create a one-time password and return it once.</small>
+        </div>
+
+        <div style="grid-column:1 / -1; display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
+          <button id="create-student-cancel" type="button" class="btn btn-outline">Cancel</button>
+          <button id="create-student-submit" type="submit" class="btn btn-primary">Create student</button>
+        </div>
+      </form>
+      <div id="create-student-feedback" style="margin-top:8px;font-size:13px;color:#d00;display:none"></div>
+    </div>
+
+    <!-- Search / filters -->
+    <div class="students-controls" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;">
+      <input id="student-search" placeholder="Search by name or id" style="flex:1;min-width:160px;padding:10px;border-radius:10px;border:1px solid #e6eef8" />
+      <select id="student-class-filter" style="padding:10px;border-radius:10px;border:1px solid #e6eef8">
+        <option value="">All classes</option>
+      </select>
+      <div style="display:flex;gap:8px">
+        <button id="students-refresh" class="btn btn-outline" title="Refresh list">Refresh</button>
+      </div>
+    </div>
+
+    <!-- Students list -->
+    <div id="students-list" style="display:grid;gap:10px">
+      <!-- JS will populate rows here. Use the .student-row styles below. -->
+      <div id="students-empty" class="muted card" style="padding:12px;border-radius:10px;border:1px dashed #e6e6e6;background:#fbfdff">No students yet. Click "Add Student" to register a new student.</div>
+    </div>
+
+    <!-- Floating Add button for small screens -->
+    <button id="add-student-fab" class="fab" title="Add student" aria-label="Add student">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+
+    <style>
+      /* Basic modern utilities for students template */
+      .card { background:#fff; border-radius:12px; padding:12px; box-shadow:0 6px 20px rgba(2,6,23,0.04); border:1px solid rgba(15,23,42,0.03); }
+      .muted { color:#6b7280; font-size:13px; }
+      .field-label { font-size:13px; margin-bottom:6px; color:#111827; font-weight:600; }
+
+      /* Buttons */
+      .btn { display:inline-flex; align-items:center; gap:8px; border:0; padding:8px 10px; border-radius:8px; cursor:pointer; font-weight:600; background:transparent; color:inherit; }
+      .btn-primary { background: linear-gradient(90deg,#2563eb,#7c3aed); color:#fff; box-shadow: 0 8px 18px rgba(37,99,235,0.12); }
+      .btn-outline { background:transparent;border:1px solid #e6eef8;color:#111827;padding:8px 10px;border-radius:8px; }
+
+      /* Student row layout */
+      .student-row {
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:12px;
+        padding:10px;
+        border-radius:10px;
+        background: #fff;
+        border: 1px solid rgba(15,23,42,0.04);
+      }
+      .student-left { display:flex; gap:12px; align-items:center; min-width:0; }
+      .student-avatar { width:48px;height:48px;border-radius:10px;background:linear-gradient(90deg,#eef2ff,#fff);display:flex;align-items:center;justify-content:center;font-weight:700;color:#2563eb }
+      .student-meta { min-width:0; overflow:hidden; }
+      .student-name { font-weight:700; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .student-sub { color:var(--muted); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+      /* Actions: icon-only buttons */
+      .student-actions { display:flex; gap:8px; align-items:center; }
+      .action-btn {
+        width:40px; height:40px; border-radius:8px; display:inline-grid; place-items:center; border:1px solid transparent; cursor:pointer; background:transparent;
+      }
+      .action-btn svg { width:18px;height:18px; display:block; }
+      .action-btn.edit { border-color: rgba(37,99,235,0.08); background: rgba(37,99,235,0.04); color:#2563eb; }
+      .action-btn.pw { border-color: rgba(124,58,237,0.06); background: rgba(124,58,237,0.04); color:#7c3aed; }
+      .action-btn.delete { border-color: rgba(239,68,68,0.06); background: rgba(239,68,68,0.04); color:#ef4444; }
+
+      .action-btn:focus { outline:3px solid rgba(37,99,235,0.12); outline-offset:2px; }
+
+      /* Responsive behavior */
+      @media (max-width: 900px) {
+        .student-row { padding:12px; }
+        .student-avatar { width:44px; height:44px; }
+        .student-name { font-size:14px; }
+        .student-actions .action-label { display:none; }
+      }
+
+      /* Floating action button on mobile */
+      .fab {
+        position:fixed;
+        right:18px;
+        bottom:18px;
+        width:56px;
+        height:56px;
+        border-radius:999px;
+        display:none;
+        align-items:center;
+        justify-content:center;
+        background:linear-gradient(90deg,#2563eb,#7c3aed);
+        color:#fff;
+        border:0;
+        box-shadow:0 12px 30px rgba(37,99,235,0.18);
+        z-index:1600;
+        cursor:pointer;
+      }
+      .fab svg { width:20px;height:20px; }
+
+      /* show fab on small screens */
+      @media (max-width:640px) {
+        .fab { display:flex; }
+        #add-student-btn { display:none; } /* hide top Add on small screens, fab replaces it */
+      }
+
+      /* Accessibility: focus styles */
+      .student-row:focus-within { box-shadow: 0 8px 26px rgba(2,6,23,0.06); border-color: rgba(37,99,235,0.06); }
+
+    </style>
+
+
+  </section>
+</template>
+
+<template id="tpl-teachers">
+  <section class="page teachers-page" style="padding:12px; max-width:1100px; margin:0 auto; box-sizing:border-box;">
+    <!-- Header row: title + search + add button -->
+    <div class="teachers-header" style="display:flex;align-items:center;gap:12px;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;">
+      <div style="display:flex;align-items:center;gap:12px;min-width:0;">
+        <h2 style="margin:0;font-size:20px;line-height:1.1">Teachers</h2>
+        <div class="muted" style="font-size:13px;">Manage teaching staff</div>
+      </div>
+
+      <!-- Search + Add grouped on the right (wraps on mobile) -->
+      <div style="display:flex;align-items:center;gap:8px;flex:0 1 420px;min-width:220px;">
+        <input id="teacher-search" aria-label="Search teachers by name or id" placeholder="Search by name or id" style="flex:1;padding:8px 10px;border-radius:10px;border:1px solid #e6eef8;box-sizing:border-box" />
+
+        <!-- Primary add button (keeps same id so existing JS works) -->
+        <button id="add-teacher-btn" class="btn" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;border:0;background:#2563eb;color:#fff;font-weight:700;cursor:pointer;">
+          <!-- plus icon -->
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+          <span style="font-size:14px">Add</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Teachers grid -->
+    <div id="teachers-list" class="teachers-grid" style="display:grid;gap:12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
+      <!-- JS will populate teacher cards here -->
+      <!-- Example empty state: -->
+      <div id="teachers-empty" class="card muted" style="display:none;padding:16px;border-radius:12px;background:#fff;border:1px dashed #e6eef8;color:#64748b">
+        No teachers yet. Click Add to register a teacher.
+      </div>
+    </div>
+
+    <!-- Floating action button visible on small screens (delegates to add-teacher-btn) -->
+    <button id="add-teacher-fab" class="fab" aria-hidden="false" title="Add teacher" style="display:none;position:fixed;right:16px;bottom:18px;width:56px;height:56px;border-radius:999px;border:0;background:#2563eb;color:#fff;align-items:center;justify-content:center;box-shadow:0 10px 30px rgba(37,99,235,0.18);cursor:pointer;"
+      onclick="(function(){ const b=document.getElementById('add-teacher-btn'); if(b) b.click(); })()">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 5v14M5 12h14"/>
+      </svg>
+    </button>
+
+    <style>
+      /* Card style used by grid children */
+      .teachers-grid .card {
+        background: #fff;
+        border-radius: 12px;
+        padding: 12px;
+        box-shadow: 0 6px 18px rgba(2,6,23,0.04);
+        border: 1px solid rgba(15,23,42,0.03);
+        display:flex;
+        flex-direction:column;
+        gap:8px;
+      }
+
+      /* Teacher card header row */
+      .teacher-row {
+        display:flex;
+        align-items:center;
+        gap:12px;
+      }
+      .teacher-avatar {
+        width:48px;height:48px;border-radius:10px;background:#eef2ff;display:flex;align-items:center;justify-content:center;font-weight:700;color:#1e293b;font-size:16px;
+      }
+      .teacher-meta {
+        flex:1; min-width:0;
+      }
+      .teacher-name { font-weight:700; font-size:15px; color:#0f172a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .teacher-sub { font-size:13px; color:#64748b; }
+
+      /* action row */
+      .teacher-actions { display:flex; gap:8px; margin-top:8px; align-items:center; }
+      .teacher-actions .btn { display:inline-grid; place-items:center; width:36px; height:36px; padding:0; border-radius:8px; border:0; cursor:pointer; background:transparent; color: #374151; }
+      .teacher-actions .btn svg { display:block; }
+      .teacher-actions .btn:hover { background: rgba(2,6,23,0.04); }
+
+      /* fab visibility and responsive tweaks */
+      @media (max-width: 900px) {
+        /* show floating add button on mobile */
+        #add-teacher-fab { display:flex; }
+
+        /* make header controls more compact */
+        .teachers-header { gap:8px; }
+        #add-teacher-btn span { display:none; } /* hide label to save space on small screens */
+        #add-teacher-btn { padding:10px; width:44px; height:44px; border-radius:10px; justify-content:center; }
+
+        /* input should stretch full width */
+        #teacher-search { min-width:0; flex:1; }
+      }
+
+      @media (min-width: 901px) {
+        /* On larger screens ensure the header add button shows label */
+        #add-teacher-btn span { display:inline-block; }
+        #add-teacher-fab { display:none; }
+      }
+
+      /* small helper muted */
+      .muted { color:#6b7280; font-size:13px; }
+
+      /* example utility to hide empty state if JS populates list */
+      .hidden { display:none !important; }
+    </style>
+  </section>
+</template>
 
   <template id="tpl-classes">
     <section class="page">
@@ -1076,18 +1255,25 @@
   </div>
 </div>
 
-  <!-- <script src="/socket.io/socket.io.js"></script> -->
+<!-- put this BEFORE <script src="js/api.js"></script> -->
+<script>
+  // Production (Netlify) should set this to your Render backend (no trailing /api).
+  // On local dev you can comment this line out to let api.js default to localhost.
+  window.BACKEND_URL = "https://study-helper-b11e.onrender.com";
+</script>
 
-  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-  
-  <script>'http://127.0.0.1:5000/api';</script>
+<!-- socket.io client (must appear before api.js if you want socket enabled on page load) -->
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
- <!-- <script src="http://localhost:5000/socket.io/socket.io.js"></script> -->
+<!-- chart library (optional, ok to keep here) -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
- <script>window.SERVER_BASE = 'http://localhost:5000';</script>
+<!-- REMOVE any stray/no-op scripts like: <script>'http://127.0.0.1:5000/api';</script> -->
+<!-- REMOVE window.SERVER_BASE unless you need it and keep consistent values -->
 
+<!-- Now load your client helper which will init the socket using BACKEND_URL -->
+<script src="js/api.js"></script>
+<script src="js/app.js"></script>
 
-  <script src="js/api.js"></script>
-  <script src="js/app.js"></script>
 </body>
 </html>
