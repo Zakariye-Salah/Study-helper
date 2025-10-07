@@ -87,10 +87,18 @@ function wireNavOnce() {
   function toggleNav() {
     const isOpen = navEl.classList.toggle('open');
     if (hb) hb.classList.toggle('open', isOpen);
+  
+    // Add/remove a global body class so templates (e.g. .game-header) can hide when nav is open
+    document.body.classList.toggle('nav-open', isOpen);
+  
     if (isOpen) {
-      // lock scroll
+      // lock page scroll while nav is open
       document.documentElement.style.overflow = 'hidden';
       document.body.style.overflow = 'hidden';
+  
+      // ensure the nav starts scrolled to the top
+      try { navEl.scrollTop = 0; } catch (e) { /* ignore */ }
+  
       // animate nav items in with stagger if not reduced-motion
       const reduced = prefersReducedMotion();
       const items = Array.from(navEl.querySelectorAll('li'));
@@ -98,24 +106,31 @@ function wireNavOnce() {
         items.forEach((li, idx) => {
           li.classList.add('enter');
           li.classList.remove('active');
-          // stagger delay
           setTimeout(() => li.classList.add('active'), 40 * idx);
         });
       } else {
         items.forEach(li => li.classList.remove('enter','active'));
       }
-      // focus first item
+  
+      // focus first item for keyboard users
       const first = navEl.querySelector('li');
       if (first) first.focus && first.focus();
     } else {
-      // unlock scroll
+      // unlock page scroll when closing
       document.documentElement.style.overflow = '';
       document.body.style.overflow = '';
-      // remove enter classes
+  
+      // remove enter animation classes
       navEl.querySelectorAll('li.enter').forEach(li => li.classList.remove('enter','active'));
+  
+      // remove the global body class
+      document.body.classList.remove('nav-open');
+  
+      // return focus to hamburger for accessibility
       if (hb) hb.focus();
     }
   }
+  
 
   // wire hamburger if present
   if (hb) {
@@ -173,6 +188,50 @@ function wireNavOnce() {
   });
 
   return true;
+}
+
+// after determining navEl and hb exist
+function resetNavScrollToTop() {
+  try {
+    if (!navEl) return;
+    // keep the scrollable element at top when opening
+    navEl.scrollTop = 0;
+    // also make sure the first item is focusable
+    const first = navEl.querySelector('li');
+    if (first) first.setAttribute('tabindex', '0');
+  } catch (e) { /* ignore */ }
+}
+
+// call resetNavScrollToTop() when opening nav in toggleNav()
+function toggleNav() {
+  const isOpen = navEl.classList.toggle('open');
+  if (hb) hb.classList.toggle('open', isOpen);
+  if (isOpen) {
+    document.documentElement.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+
+    // reset scroll and focus
+    resetNavScrollToTop();
+
+    const reduced = prefersReducedMotion();
+    const items = Array.from(navEl.querySelectorAll('li'));
+    if (!reduced && items.length) {
+      items.forEach((li, idx) => {
+        li.classList.add('enter');
+        li.classList.remove('active');
+        setTimeout(() => li.classList.add('active'), 40 * idx);
+      });
+    } else {
+      items.forEach(li => li.classList.remove('enter','active'));
+    }
+    const first = navEl.querySelector('li');
+    if (first) first.focus && first.focus();
+  } else {
+    document.documentElement.style.overflow = '';
+    document.body.style.overflow = '';
+    navEl.querySelectorAll('li.enter').forEach(li => li.classList.remove('enter','active'));
+    if (hb) hb.focus();
+  }
 }
 
 // Try to wire immediately; if markup not ready wait for DOMContentLoaded
@@ -8008,8 +8067,8 @@ async function loadStudents() {
 
       const controls = document.createElement('div'); controls.style.display='flex'; controls.style.gap='8px'; controls.style.flexShrink='0';
       controls.innerHTML = `<button data-id="${s._id}" class="edit btn">Edit</button>
-                      <button data-id="${s._id}" class="chg-pass btn" style="background:#f59e0b;margin-left:6px">Change Password</button>
-                      <button data-id="${s._id}" class="del btn" style="background:#ef4444;margin-left:6px">Delete</button>`;
+                      <button data-id="${s._id}" class="chg-pass btn" style="background:#f59e0b;margin-left:6px">Change Pass</button>
+                      <button data-id="${s._id}" class="del btn" style="background:#ef4444;margin-left:6px">Del</button>`;
 
       row.appendChild(left); row.appendChild(controls);
       row.addEventListener('click', (ev) => {
