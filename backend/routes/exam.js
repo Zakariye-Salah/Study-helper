@@ -218,8 +218,14 @@ router.post('/:examId/results/:resultId/images', requireAuth, upload.array('imag
     }
 
     const files = req.files || [];
-    const urls = files.map(f => `/uploads/exams/${f.filename}`);
-
+    // Determine request origin — works behind proxies if X-Forwarded-Host/protocol set correctly
+    const proto = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.headers['x-forwarded-host'] || req.get('host') || `${req.hostname}`;
+    const origin = `${proto}://${host}`;
+    
+    // Build absolute URLs so frontend can load images directly without guessing base
+    const urls = files.map(f => `${origin}/uploads/exams/${f.filename}`);
+    
     const r = exam.results.id(resultId);
     if (!r) {
       // remove uploaded files (to avoid orphan files) and return 404
@@ -486,85 +492,3 @@ router.get('/:examId/export', requireAuth, async (req, res) => {
 
 
 module.exports = router;
-
-// router.get('/:examId/export', requireAuth, async (req, res) => {
-//   try {
-//     const user = req.user;
-//     const { examId } = req.params;
-//     const classId = req.query.classId || null;
-
-//     if (!mongoose.isValidObjectId(examId)) return res.status(400).json({ error: 'Invalid exam id' });
-
-//     const exam = await Exam.findById(examId).lean();
-//     if (!exam) return res.status(404).json({ error: 'Exam not found' });
-
-//     if (String(user.role).toLowerCase() === 'manager') {
-//       if (String(exam.createdBy) !== String(user._id) && String(exam.schoolId) !== String(user.schoolId)) {
-//         return res.status(403).json({ error: 'Forbidden' });
-//       }
-//     }
-
-//     // Prepare result list
-//     let results = (exam.results || []).map(r => ({ ...r }));
-//     if (classId) results = results.filter(r => String(r.classId) === String(classId));
-
-//     const studentIds = results.map(r => r.studentId);
-//     const students = studentIds.length ? await Student.find({ _id: { $in: studentIds } }).lean() : [];
-//     const byId = {};
-//     students.forEach(s => byId[String(s._id)] = s);
-
-//     results.forEach(r => {
-//       r.student = byId[String(r.studentId)] || null;
-//     });
-//     results.sort((a,b) => (b.total || 0) - (a.total || 0));
-//     results.forEach((r,i) => r.rank = i+1);
-
-//     // Generate PDF with PDFKit
-//     res.setHeader('Content-Type', 'application/pdf');
-//     res.setHeader('Content-Disposition', `attachment; filename="exam-${exam.examCode}${classId ? '-class-'+classId : ''}.pdf"`);
-
-//     const doc = new PDFDocument({ margin: 40, size: 'A4' });
-//     doc.pipe(res);
-
-//     doc.fontSize(18).text(`${exam.title}`, { align: 'center' });
-//     doc.moveDown(0.5);
-//     doc.fontSize(12).text(`Exam Code: ${exam.examCode}`, { align: 'center' });
-//     doc.moveDown(1);
-
-//     // headings
-//     doc.fontSize(10).text('Rank', { continued: true, width: 40 });
-//     doc.text('ID', { continued: true, width: 100, align: 'left' });
-//     doc.text('Name', { continued: true, width: 160 });
-//     (exam.subjects || []).forEach(s => doc.text(s.code || s.name || 'Sub', { continued: true, width: 50 }));
-//     doc.text('Total', { width: 50, align: 'right' });
-//     doc.moveDown(0.2);
-//     doc.strokeColor('#ccc').moveTo(doc.x, doc.y).lineTo(doc.page.width - doc.page.margins.right, doc.y).stroke();
-//     doc.moveDown(0.4);
-
-//     const maxPerPage = 30;
-//     let idx = 0;
-//     for (const r of results) {
-//       idx++;
-//       const stu = r.student || {};
-//       doc.fontSize(10).text(String(r.rank), { continued: true, width: 40 });
-//       doc.text(String(stu._id || ''), { continued: true, width: 100 });
-//       doc.text(String(stu.fullname || 'Unknown'), { continued: true, width: 160 });
-//       for (const subj of (exam.subjects || [])) {
-//         const subMarkObj = (r.marks || []).find(m => (m.subjectCode === subj.code) || (m.subjectName === subj.name));
-//         doc.text(typeof subMarkObj !== 'undefined' && subMarkObj !== null && subMarkObj.mark !== null ? String(subMarkObj.mark) : '-', { continued: true, width: 50 });
-//       }
-//       doc.text(String(r.total || 0), { width: 50, align: 'right' });
-//       doc.moveDown(0.2);
-
-//       if (idx % maxPerPage === 0) {
-//         doc.addPage();
-//       }
-//     }
-
-//     doc.end();
-//   } catch (e) {
-//     console.error('export pdf error', e);
-//     res.status(500).json({ error: 'Server error' });
-//   }
-// });
-
