@@ -1,11 +1,11 @@
-// backend/controllers/resultsController.js
+// controllers/resultsController.js (replace corresponding functions)
+
 const mongoose = require('mongoose');
 const Exam = require('../models/Exam');
 const Student = require('../models/Student');
 const ClassModel = require('../models/Class');
 const ParentModel = require('../models/Parent');
 
-/** compute total & average for a result object (mutates) */
 function computeTotalsForResult(result) {
   const marks = Array.isArray(result.marks) ? result.marks : [];
   let total = 0, count = 0;
@@ -16,78 +16,101 @@ function computeTotalsForResult(result) {
   result.average = count ? (total / count) : 0;
 }
 
-/**
- * listStudentResults
- * - students: GET /api/results  -> returns their results (uses token's req.user._id)
- * - parent: GET /api/results  -> returns their child's results (uses token childId or Parent lookup)
- * - admin/manager: GET /api/results?studentId=... -> returns that student's results
- *
- * Response: { ok:true, results: [...] }
- */
+function getBaseUrl(req) {
+  try {
+    const forwardedProto = req.headers['x-forwarded-proto'];
+    const forwardedHost = req.headers['x-forwarded-host'] || req.headers['x-forwarded-server'];
+    if (forwardedProto && forwardedHost) {
+      return `${forwardedProto.split(',')[0].trim()}://${forwardedHost.split(',')[0].trim()}`.replace(/\/$/, '');
+    }
+    if (forwardedProto && req.get('host')) {
+      return `${forwardedProto.split(',')[0].trim()}://${req.get('host')}`.replace(/\/$/, '');
+    }
+    const proto = req.protocol || 'http';
+    const host = req.get('host') || 'localhost';
+    return `${proto}://${host}`.replace(/\/$/, '');
+  } catch (e) {
+    return `${req.protocol || 'http'}://${req.get('host') || 'localhost'}`.replace(/\/$/, '');
+  }
+}
+
+function toAbsoluteUrlMaybe(req, raw) {
+  if (!raw) return null;
+  try {
+    // object candidate
+    if (typeof raw === 'object') {
+      const cand = raw.url || raw.path || raw.file || raw.filename || raw.src || raw.location || raw.fullUrl || null;
+      if (!cand) return null;
+      raw = cand;
+    }
+    const s = String(raw || '').trim();
+    if (!s) return null;
+    if (/^https?:\/\//i.test(s)) return s;
+    const base = getBaseUrl(req) || (req.protocol + '://' + req.get('host'));
+    if (s.startsWith('/')) return (base + s).replace(/([^:]\/)\/+/g, '$1');
+    return (base + '/' + s).replace(/([^:]\/)\/+/g, '$1');
+  } catch (e) {
+    return String(raw);
+  }
+}
+
+function extractName(raw) {
+  if (!raw) return 'file';
+  try {
+    if (typeof raw === 'object') {
+      return raw.filename || raw.name || raw.originalname || raw.file || (raw.url ? String(raw.url).split('/').pop() : 'file');
+    }
+    const s = String(raw);
+    if (!s) return 'file';
+    return s.split('/').pop().split('?')[0].split('#')[0] || s;
+  } catch (e) {
+    return String(raw);
+  }
+}
+
 exports.listStudentResults = async (req, res) => {
   try {
     if (!req.user) return res.status(401).json({ ok: false, error: 'Unauthorized' });
 
     const role = (req.user.role || '').toLowerCase();
     const isPrivileged = (role === 'admin' || role === 'manager');
-
-    // robust requester id (some tokens use id, some _id)
     const requesterId = req.user._id || req.user.id || null;
 
-    // Determine which studentId to load:
     let studentId = null;
-    if (isPrivileged && req.query && req.query.studentId) {
-      studentId = String(req.query.studentId).trim();
-    } else if (role === 'parent') {
-      // parent should view their linked child
-      if (req.user.childId) {
-        studentId = String(req.user.childId);
-      } else {
-        // fallback to parent lookup
-        try {
-          const parentDoc = await ParentModel.findById(requesterId).lean().catch(()=>null);
-          if (parentDoc && parentDoc.childStudent) studentId = String(parentDoc.childStudent);
-        } catch (e) {
-          studentId = null;
-        }
+    if (isPrivileged && req.query && req.query.studentId) studentId = String(req.query.studentId).trim();
+    else if (role === 'parent') {
+      if (req.user.childId) studentId = String(req.user.childId);
+      else {
+        const parentDoc = await ParentModel.findById(requesterId).lean().catch(()=>null);
+        if (parentDoc && parentDoc.childStudent) studentId = String(parentDoc.childStudent);
       }
     } else {
-      // student or other roles: use token's user id
       studentId = String(requesterId);
     }
 
     if (!studentId) return res.status(400).json({ ok:false, error: 'studentId required or parent not linked to a student' });
 
-    // Build flexible query so we don't crash if studentId isn't an ObjectId
     let studentObjectId = null;
     if (mongoose.isValidObjectId(studentId)) studentObjectId = new mongoose.Types.ObjectId(studentId);
 
-    // Base results query: find exams that include a result for this student
-    const resultsQuery = studentObjectId
-      ? { 'results.studentId': studentObjectId }
-      : { 'results.studentId': studentId };
+    const resultsQuery = studentObjectId ? { 'results.studentId': studentObjectId } : { 'results.studentId': studentId };
 
-    // If manager, limit exams to those they own or that belong to their school (defensive)
     if (role === 'manager') {
       const or = [{ createdBy: String(requesterId) }];
       if (req.user.schoolId) or.push({ schoolId: req.user.schoolId });
-      // add $and to ensure resultsQuery + ownership/ school filter
       resultsQuery.$and = resultsQuery.$and || [];
       resultsQuery.$and.push({ $or: or });
     }
 
     const exams = await Exam.find(resultsQuery).lean().exec();
-
     const output = [];
 
-    // optionally preload student doc to enrich output
     let studentDoc = null;
     try {
       if (mongoose.isValidObjectId(studentId)) studentDoc = await Student.findById(studentId).lean().exec().catch(()=>null);
       else studentDoc = await Student.findOne({ $or: [{ _id: studentId }, { numberId: studentId }, { customId: studentId }] }).lean().exec().catch(()=>null);
     } catch (e) { studentDoc = null; }
 
-    // optionally load class name for student
     let classNameFromStudent = null;
     if (studentDoc && studentDoc.classId) {
       try {
@@ -100,16 +123,13 @@ exports.listStudentResults = async (req, res) => {
       const rawResults = Array.isArray(exam.results) ? exam.results.map(r => ({ ...r })) : [];
       if (!rawResults.length) continue;
 
-      // compute totals for all entries
       for (const rr of rawResults) {
         if (typeof rr.total !== 'number' || typeof rr.average !== 'number') computeTotalsForResult(rr);
       }
-
-      // overall ranking
       rawResults.sort((a,b) => (b.total || 0) - (a.total || 0));
       rawResults.forEach((r,i) => r.rank = i+1);
 
-      // class ranking map
+      // class rank map
       const classGroups = {};
       rawResults.forEach(r => {
         const cid = String(r.classId || '');
@@ -123,17 +143,11 @@ exports.listStudentResults = async (req, res) => {
         });
       });
 
-      // find the student's result (match both ObjectId and string)
-      const myResult = rawResults.find(r => {
-        if (!r || !r.studentId) return false;
-        return String(r.studentId) === String(studentId) || (studentObjectId && String(r.studentId) === String(studentObjectId));
-      });
+      const myResult = rawResults.find(r => r && r.studentId && (String(r.studentId) === String(studentId) || (studentObjectId && String(r.studentId) === String(studentObjectId))));
       if (!myResult) continue;
 
-      // ensure totals computed for myResult
       computeTotalsForResult(myResult);
 
-      // class name (prefer studentDoc class name)
       let className = classNameFromStudent || null;
       if (!className && myResult.classId) {
         try {
@@ -142,6 +156,24 @@ exports.listStudentResults = async (req, res) => {
         } catch(e) { className = null; }
       }
 
+      let studentPhoto = null;
+      if (studentDoc && (studentDoc.photoUrl || studentDoc.photo || studentDoc.avatar)) {
+        studentPhoto = toAbsoluteUrlMaybe(req, studentDoc.photoUrl || studentDoc.photo || studentDoc.avatar);
+      } else if (myResult.student && (myResult.student.photoUrl || myResult.student.photo || myResult.student.avatar)) {
+        studentPhoto = toAbsoluteUrlMaybe(req, myResult.student.photoUrl || myResult.student.photo || myResult.student.avatar);
+      } else {
+        studentPhoto = null;
+      }
+
+      const storedFiles = myResult.uploadedImages || myResult.uploadedFiles || myResult.files || [];
+      const filesObjs = Array.isArray(storedFiles)
+        ? storedFiles.map(f => {
+            const url = toAbsoluteUrlMaybe(req, f);
+            const name = extractName(f);
+            return url ? { url, name } : null;
+          }).filter(Boolean)
+        : [];
+
       output.push({
         examId: exam._id,
         examTitle: exam.title || '',
@@ -149,7 +181,7 @@ exports.listStudentResults = async (req, res) => {
         studentId: String(studentId),
         studentFullname: (studentDoc && studentDoc.fullname) || (myResult.student && myResult.student.fullname) || null,
         studentPhone: (studentDoc && studentDoc.phone) || (myResult.student && myResult.student.phone) || null,
-        studentPhoto: (studentDoc && (studentDoc.photoUrl || studentDoc.photo || studentDoc.avatar)) || (myResult.student && (myResult.student.photoUrl || myResult.student.photo || myResult.student.avatar)) || null,
+        studentPhoto: studentPhoto,
         studentNumberId: (studentDoc && (studentDoc.numberId || studentDoc.number)) || (myResult.student && myResult.student.numberId) || null,
         classId: myResult.classId || null,
         className: className || (myResult.student && myResult.student.className) || null,
@@ -158,14 +190,12 @@ exports.listStudentResults = async (req, res) => {
         average: myResult.average || 0,
         rankOverall: myResult.rank || null,
         rankClass: classRankMap[`${String(myResult.classId||'')}::${String(myResult.studentId)}`] || null,
-        files: myResult.uploadedImages || [],
+        files: filesObjs,
         createdAt: myResult.createdAt || exam.createdAt || null
       });
     }
 
-    // newest first
     output.sort((a,b) => (b.createdAt ? new Date(b.createdAt) : 0) - (a.createdAt ? new Date(a.createdAt) : 0));
-
     return res.json({ ok: true, results: output });
   } catch (err) {
     console.error('resultsController.listStudentResults error:', err && (err.stack || err));
@@ -173,10 +203,6 @@ exports.listStudentResults = async (req, res) => {
   }
 };
 
-/**
- * getResultForExam - returns a single student's result for a given exam id
- * Admin/manager may pass ?studentId=... ; parents and students rely on token mapping
- */
 exports.getResultForExam = async (req, res) => {
   try {
     if (!req.user) return res.status(401).json({ ok:false, error: 'Unauthorized' });
@@ -191,33 +217,27 @@ exports.getResultForExam = async (req, res) => {
     const exam = await Exam.findById(examId).lean().exec();
     if (!exam) return res.status(404).json({ ok:false, error: 'Exam not found' });
 
-    // managers must have access
     if (role === 'manager') {
       const owns = String(exam.createdBy || '') === String(requesterId);
       const sameSchool = req.user.schoolId && String(exam.schoolId || '') === String(req.user.schoolId);
       if (!owns && !sameSchool) return res.status(403).json({ ok:false, error: 'Forbidden' });
     }
 
-    // determine studentId
     let studentId = null;
-    if (isPrivileged && req.query && req.query.studentId) {
-      studentId = String(req.query.studentId).trim();
-    } else if (role === 'parent') {
+    if (isPrivileged && req.query && req.query.studentId) studentId = String(req.query.studentId).trim();
+    else if (role === 'parent') {
       if (req.user.childId) studentId = String(req.user.childId);
       else {
         const parentDoc = await ParentModel.findById(requesterId).lean().catch(()=>null);
         if (parentDoc && parentDoc.childStudent) studentId = String(parentDoc.childStudent);
       }
-    } else {
-      studentId = String(requesterId);
-    }
+    } else studentId = String(requesterId);
 
     if (!studentId) return res.status(400).json({ ok:false, error: 'studentId required' });
 
     const allResults = Array.isArray(exam.results) ? exam.results.map(r => ({ ...r })) : [];
     if (!allResults.length) return res.status(404).json({ ok:false, error: 'No results for this exam' });
 
-    // compute totals & ranking
     for (const rr of allResults) {
       if (typeof rr.total !== 'number' || typeof rr.average !== 'number') computeTotalsForResult(rr);
     }
@@ -227,7 +247,6 @@ exports.getResultForExam = async (req, res) => {
     const my = allResults.find(r => r && (String(r.studentId) === String(studentId)));
     if (!my) return res.status(404).json({ ok:false, error: 'Result not found for this exam' });
 
-    // compute class ranking map
     const classGroups = {};
     allResults.forEach(r => {
       const cid = String(r.classId || '');
@@ -241,7 +260,6 @@ exports.getResultForExam = async (req, res) => {
       });
     });
 
-    // optionally enrich student & class data
     let studentDoc = null, cls = null;
     try {
       if (mongoose.isValidObjectId(studentId)) studentDoc = await Student.findById(studentId).lean().exec().catch(()=>null);
@@ -251,6 +269,19 @@ exports.getResultForExam = async (req, res) => {
       try { cls = await ClassModel.findById(String(my.classId)).lean().exec().catch(()=>null); } catch(e){ cls = null; }
     }
 
+    const studentPhoto = (studentDoc && (studentDoc.photoUrl || studentDoc.photo || studentDoc.avatar)) ? toAbsoluteUrlMaybe(req, studentDoc.photoUrl || studentDoc.photo || studentDoc.avatar) :
+                         (my.student && (my.student.photoUrl || my.student.photo || my.student.avatar)) ? toAbsoluteUrlMaybe(req, my.student.photoUrl || my.student.photo || my.student.avatar) :
+                         null;
+
+    const storedFiles = my.uploadedImages || my.uploadedFiles || my.files || [];
+    const filesObjs = Array.isArray(storedFiles)
+      ? storedFiles.map(f => {
+          const url = toAbsoluteUrlMaybe(req, f);
+          const name = extractName(f);
+          return url ? { url, name } : null;
+        }).filter(Boolean)
+      : [];
+
     const response = {
       examId: exam._id,
       examTitle: exam.title || '',
@@ -258,7 +289,7 @@ exports.getResultForExam = async (req, res) => {
       studentId: String(studentId),
       studentFullname: (studentDoc && studentDoc.fullname) || (my.student && my.student.fullname) || null,
       studentPhone: (studentDoc && studentDoc.phone) || (my.student && my.student.phone) || null,
-      studentPhoto: (studentDoc && (studentDoc.photoUrl || studentDoc.photo || studentDoc.avatar)) || (my.student && (my.student.photoUrl || my.student.photo || my.student.avatar)) || null,
+      studentPhoto: studentPhoto,
       studentNumberId: (studentDoc && studentDoc.numberId) || null,
       className: (cls && cls.name) || (my && my.className) || null,
       marks: my.marks || [],
@@ -266,7 +297,7 @@ exports.getResultForExam = async (req, res) => {
       average: my.average || 0,
       rankOverall: my.rank || null,
       rankClass: classRankMap[`${String(my.classId||'')}::${String(my.studentId)}`] || null,
-      files: my.uploadedImages || []
+      files: filesObjs
     };
 
     return res.json({ ok: true, result: response });
