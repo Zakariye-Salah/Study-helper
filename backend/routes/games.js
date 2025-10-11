@@ -945,5 +945,269 @@ router.delete('/lessons/:id', auth, roles(['admin']), async (req, res) => {
     return res2.json({ ok: true, message: 'Deleted' });
   }, req, res);
 });
+/* -------------------------
+   Competitions & admin actions
+   ------------------------- */
+
+// require models already loaded above: MathType, Question, GameAttempt, LeaderboardEntry
+let Competition = null;
+let CompetitionResult = null;
+try {
+  const models = require('../models/Game');
+  Competition = models.Competition;
+  CompetitionResult = models.CompetitionResult;
+} catch (e) {
+  console.warn('Competition models unavailable', e);
+}
+
+/**
+ * GET /competitions
+ * optional query: active=true
+ */
+router.get('/competitions', auth, async (req, res) => {
+  await safeHandler(async (req2, res2) => {
+    if (!Competition) return res2.json({ ok: true, competitions: [] });
+    const q = {};
+    if (req2.query.active === 'true') q.active = true;
+    const items = await Competition.find(q).sort({ startAt: -1 }).lean().catch(()=>[]);
+    return res2.json({ ok: true, competitions: items });
+  }, req, res);
+});
+
+/**
+ * POST /competitions
+ * Admin only: { title, description, startAt, endAt }
+ */
+router.post('/competitions', auth, roles(['admin']), async (req, res) => {
+  await safeHandler(async (req2, res2) => {
+    if (!Competition) return res2.status(500).json({ ok: false, message: 'Competition model not available' });
+    const { title, description, startAt, endAt } = req2.body || {};
+    if (!title || !startAt || !endAt) return res2.status(400).json({ ok: false, message: 'title, startAt and endAt required' });
+    const s = new Date(startAt);
+    const e = new Date(endAt);
+    if (isNaN(s.getTime()) || isNaN(e.getTime()) || e <= s) return res2.status(400).json({ ok: false, message: 'Invalid start/end times' });
+    const comp = new Competition({ title, description: description || '', startAt: s, endAt: e, active: (s <= new Date() && e > new Date()), createdBy: req2.user._id });
+    await comp.save();
+    return res2.json({ ok: true, competition: comp });
+  }, req, res);
+});
+
+/**
+ * PUT /competitions/:id
+ * Admin only - edit competition. If editing to end it now, finalize (announce winner & clear points)
+ */
+router.put('/competitions/:id', auth, roles(['admin']), async (req, res) => {
+  await safeHandler(async (req2, res2) => {
+    if (!Competition || !CompetitionResult) return res2.status(500).json({ ok: false, message: 'Competition models not available' });
+    const id = req2.params.id;
+    if (!mongoose.Types.ObjectId.isValid(String(id))) return res2.status(400).json({ ok: false, message: 'Invalid id' });
+    const comp = await Competition.findById(String(id));
+    if (!comp) return res2.status(404).json({ ok: false, message: 'Competition not found' });
+    const { title, description, startAt, endAt, active } = req2.body || {};
+
+    if (typeof title !== 'undefined') comp.title = title;
+    if (typeof description !== 'undefined') comp.description = description;
+    if (typeof startAt !== 'undefined') comp.startAt = new Date(startAt);
+    if (typeof endAt !== 'undefined') comp.endAt = new Date(endAt);
+    if (typeof active !== 'undefined') comp.active = !!active;
+
+    await comp.save();
+
+    // If the competition was just ended (endAt <= now), finalize: compute winner and then clear competition results (as requested)
+    try {
+      if (comp.endAt && new Date(comp.endAt) <= new Date()) {
+        // aggregate winner by sum(delta) for competition
+        const agg = await CompetitionResult.aggregate([
+          { $match: { competitionId: comp._id } },
+          { $group: { _id: '$userId', total: { $sum: '$delta' }, userName: { $first: '$userName' }, userNumberId: { $first: '$userNumberId' }, managerCreatedBy: { $first: '$managerCreatedBy' }, schoolName: { $first: '$schoolName' } } },
+          { $sort: { total: -1 } },
+          { $limit: 1 }
+        ]).catch(()=>[]);
+
+        const winner = (agg && agg.length) ? agg[0] : null;
+
+        // Announce winner — attempt to notify via notifications if your app supports it (fallback: console)
+        const announce = async (w) => {
+          if (!w) return;
+          const msg = `Competition "${comp.title}" finished. Winner: ${w.userName || 'Unknown'} (ID: ${w.userNumberId || ''}) — ${w.managerCreatedBy || w.schoolName || ''}`;
+          // try to push to a Notifications collection if your app has one
+          try {
+            const Notifications = mongoose.modelNames().includes('Notification') ? mongoose.model('Notification') : null;
+            if (Notifications) {
+              const doc = new Notifications({ userId: w._id, title: 'Competition result', message: msg, createdAt: new Date() });
+              await doc.save().catch(()=>null);
+            } else {
+              // fallback: log
+              console.info('[competition] announce (no Notifications model):', msg);
+            }
+          } catch (e) {
+            console.info('[competition] announce fallback:', msg);
+          }
+        };
+
+        await announce(winner);
+
+        // Clear competition results so "all points will be zero" as requested
+        await CompetitionResult.deleteMany({ competitionId: comp._id }).catch(()=>null);
+      }
+    } catch (err) {
+      console.error('competition finalize error', err);
+    }
+
+    return res2.json({ ok: true, competition: comp });
+  }, req, res);
+});
+
+/**
+ * POST /competitions/:id/addPoints
+ * Admin only — add points (delta) for a user for the competition
+ * body: { userId, delta, reason, attemptId (optional) }
+ */
+router.post('/competitions/:id/addPoints', auth, roles(['admin']), async (req, res) => {
+  await safeHandler(async (req2, res2) => {
+    if (!Competition || !CompetitionResult) return res2.status(500).json({ ok: false, message: 'Competition models not available' });
+    const compId = req2.params.id;
+    if (!mongoose.Types.ObjectId.isValid(String(compId))) return res2.status(400).json({ ok: false, message: 'Invalid competition id' });
+    const comp = await Competition.findById(compId);
+    if (!comp) return res2.status(404).json({ ok: false, message: 'Competition not found' });
+
+    const { userId, delta = 0, reason = '', attemptId = null } = req2.body || {};
+    if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) return res2.status(400).json({ ok: false, message: 'userId required' });
+    const userObjId = new mongoose.Types.ObjectId(String(userId));
+    // snapshot some user fields if possible
+    let userName = '', userNumberId = '', managerCreatedBy = '', schoolName = '';
+    try {
+      const u = await (User ? User.findById(userObjId).lean().catch(()=>null) : Promise.resolve(null));
+      if (u) { userName = u.fullname || u.name || ''; userNumberId = u.numberId || u.childNumberId || ''; }
+    } catch (e) {}
+    // Try to snapshot Student doc if exists
+    try {
+      if (Student) {
+        const s = await Student.findById(userObjId).lean().catch(()=>null);
+        if (s) {
+          userName = userName || (s.fullname || s.name || '');
+          userNumberId = userNumberId || s.numberId || '';
+          managerCreatedBy = (s.createdBy && (s.createdBy.fullname || s.createdBy.name)) ? (s.createdBy.fullname || s.createdBy.name) : (s.managerName || '');
+          schoolName = s.schoolName || '';
+        }
+      }
+    } catch (e) {}
+
+    const cr = new CompetitionResult({
+      competitionId: comp._id,
+      userId: userObjId,
+      userName,
+      userNumberId,
+      managerCreatedBy,
+      schoolName,
+      delta: Number(delta || 0),
+      reason: String(reason || ''),
+      attemptId: (attemptId && mongoose.Types.ObjectId.isValid(String(attemptId))) ? new mongoose.Types.ObjectId(String(attemptId)) : null
+    });
+    await cr.save();
+    return res2.json({ ok: true, result: cr });
+  }, req, res);
+});
+
+/**
+ * POST /competitions/:id/clearPoints
+ * Admin only — clear all competition points for user (deletes CompetitionResult documents)
+ * body: { userId }
+ */
+router.post('/competitions/:id/clearPoints', auth, roles(['admin']), async (req, res) => {
+  await safeHandler(async (req2, res2) => {
+    if (!Competition || !CompetitionResult) return res2.status(500).json({ ok: false, message: 'Competition models not available' });
+    const compId = req2.params.id;
+    if (!mongoose.Types.ObjectId.isValid(String(compId))) return res2.status(400).json({ ok: false, message: 'Invalid competition id' });
+    const { userId } = req2.body || {};
+    if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) return res2.status(400).json({ ok: false, message: 'userId required' });
+    await CompetitionResult.deleteMany({ competitionId: compId, userId: new mongoose.Types.ObjectId(String(userId)) }).catch(()=>null);
+    return res2.json({ ok: true });
+  }, req, res);
+});
+
+/**
+ * GET /competitions/:id/user/:userId/results
+ * View competition result entries for user — admin can view any, users can view their own.
+ */
+router.get('/competitions/:id/user/:userId/results', auth, async (req, res) => {
+  await safeHandler(async (req2, res2) => {
+    if (!Competition || !CompetitionResult) return res2.status(500).json({ ok: false, message: 'Competition models not available' });
+    const compId = req2.params.id;
+    const userId = req2.params.userId;
+    if (!mongoose.Types.ObjectId.isValid(String(compId)) || !mongoose.Types.ObjectId.isValid(String(userId))) return res2.status(400).json({ ok: false, message: 'Invalid ids' });
+    // allow admin or owner
+    if ((req2.user && (req2.user.role || '').toLowerCase() !== 'admin') && String(req2.user._id) !== String(userId)) {
+      return res2.status(403).json({ ok: false, message: 'Forbidden' });
+    }
+    const items = await CompetitionResult.find({ competitionId: compId, userId: new mongoose.Types.ObjectId(String(userId)) }).sort({ createdAt: -1 }).lean().catch(()=>[]);
+    return res2.json({ ok: true, results: items });
+  }, req, res);
+});
+
+/**
+ * POST /competitions/:id/clearResult/:resultId
+ * Admin only - delete a specific CompetitionResult (used to clear specific recent-game marks)
+ */
+router.post('/competitions/:id/clearResult/:resultId', auth, roles(['admin']), async (req, res) => {
+  await safeHandler(async (req2, res2) => {
+    if (!CompetitionResult) return res2.status(500).json({ ok: false, message: 'CompetitionResult model not available' });
+    const resultId = req2.params.resultId;
+    if (!mongoose.Types.ObjectId.isValid(String(resultId))) return res2.status(400).json({ ok: false, message: 'Invalid result id' });
+    await CompetitionResult.deleteOne({ _id: new mongoose.Types.ObjectId(String(resultId)) }).catch(()=>null);
+    return res2.json({ ok: true });
+  }, req, res);
+});
+
+/**
+ * POST /competitions/:id/clearAttempt/:attemptId
+ * Admin only - zero an attempt's score and recompute leaderboard entry for that mathType/difficulty
+ */
+router.post('/competitions/:id/clearAttempt/:attemptId', auth, roles(['admin']), async (req, res) => {
+  await safeHandler(async (req2, res2) => {
+    const attemptId = req2.params.attemptId;
+    if (!mongoose.Types.ObjectId.isValid(String(attemptId))) return res2.status(400).json({ ok: false, message: 'Invalid attempt id' });
+    const attempt = await GameAttempt.findById(String(attemptId)).catch(()=>null);
+    if (!attempt) return res2.status(404).json({ ok: false, message: 'Attempt not found' });
+    // zero the attempt
+    const oldScore = attempt.score || 0;
+    attempt.score = 0;
+    await attempt.save().catch(()=>null);
+
+    // recompute leaderboard entry for same mathTypeId/difficulty/userId
+    try {
+      const cond = { mathTypeId: attempt.mathTypeId, difficulty: attempt.selectedDifficulty || 'all', userId: attempt.userId, schoolId: attempt.schoolId || null };
+      // find max among remaining attempts for this user+mathType+difficulty
+      const best = await GameAttempt.find({ userId: attempt.userId, mathTypeId: attempt.mathTypeId, selectedDifficulty: attempt.selectedDifficulty || 'all', completed: true }).sort({ score: -1 }).limit(1).lean().catch(()=>[]);
+      const newHighest = (best && best.length) ? Number(best[0].score || 0) : 0;
+      let le = await LeaderboardEntry.findOne({ mathTypeId: attempt.mathTypeId, difficulty: attempt.selectedDifficulty || 'all', userId: attempt.userId, schoolId: attempt.schoolId || null }).catch(()=>null);
+      if (le) {
+        le.highestScore = newHighest;
+        le.lastPlayedAt = new Date();
+        await le.save().catch(()=>null);
+      } else {
+        // if doesn't exist create
+        const leNew = new LeaderboardEntry({
+          mathTypeId: attempt.mathTypeId,
+          difficulty: attempt.selectedDifficulty || 'all',
+          schoolId: attempt.schoolId || null,
+          userId: attempt.userId,
+          userName: attempt.userName || '',
+          userNumberId: attempt.userNumberId || '',
+          managerCreatedBy: attempt.managerCreatedBy || '',
+          schoolName: attempt.schoolName || '',
+          highestScore: newHighest,
+          lastPlayedAt: new Date()
+        });
+        await leNew.save().catch(()=>null);
+      }
+    } catch (e) {
+      console.error('recompute leaderboard after clearing attempt', e);
+    }
+
+    return res2.json({ ok: true });
+  }, req, res);
+});
+
 
 module.exports = router;
