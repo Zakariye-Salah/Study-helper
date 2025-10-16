@@ -42,6 +42,9 @@ const recurringRoutes = require('./routes/recurring');
 const gamesRouter = require('./routes/games');
 const recycleRouter = require('./routes/recycle');
 
+// near other route imports at top
+const developerRoutes = require('./routes/developer');
+
 let chatsRouter = null;
 try { chatsRouter = require('./routes/chats'); } catch(e){ /* optional */ }
 
@@ -51,6 +54,8 @@ const RecurringCharge = require('./models/RecurringCharge');
 const Charge = require('./models/Charge');
 const Student = require('./models/Student');
 const Teacher = require('./models/Teacher');
+
+
 
 // -----------------------------
 // App init + uploads folder
@@ -220,6 +225,12 @@ if (chatsRouter) app.use('/api/chats', chatsRouter);
 app.use('/api/recurring', recurringRoutes);
 app.use('/api/recycle', recycleRouter);
 app.use('/api/math-game', gamesRouter);
+
+
+// ... later, after other app.use routes:
+app.use('/api/developers', developerRoutes);
+
+// root
 
 // root
 app.get('/', (req, res) => res.json({ ok:true, message:'School Manager API' }));
