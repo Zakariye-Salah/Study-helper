@@ -387,103 +387,161 @@ router.get('/history/:classId', auth, roles(['admin','manager','teacher']), asyn
 
 /* --------------------------
    Create / update attendance (POST /attendances)
+   Supports:
+     - single edit by _id (same as before)
+     - single upsert by classId+date+subjectId (same as before)
+     - batch mode: body.items = [ { classId, subjectId, date, records, teacherId? }, ... ]
    Roles: admin, manager, teacher
    -------------------------- */
-router.post('/', auth, roles(['admin','manager','teacher']), async (req, res) => {
-  try {
-    const { _id, id, classId, subjectId, date, records = [], teacherId: postedTeacherId } = req.body;
-    if (!classId) return res.status(400).json({ message: 'classId required' });
-    const dt = date ? fmtDate(date) : fmtDate(new Date());
-    const qClassId = mongoose.Types.ObjectId.isValid(String(classId)) ? new mongoose.Types.ObjectId(String(classId)) : classId;
-
-    let teacherId = req.user._id;
-    if (req.user.role !== 'teacher' && postedTeacherId) {
-      teacherId = mongoose.Types.ObjectId.isValid(String(postedTeacherId)) ? new mongoose.Types.ObjectId(String(postedTeacherId)) : postedTeacherId;
-    }
-
-    if (req.user.role === 'teacher') {
-      const t = await Teacher.findById(req.user._id).lean();
-      if (!t) return res.status(403).json({ message: 'Teacher record not found' });
-      const allowed = (t.classIds || []).map(x => String(x));
-      if (!allowed.includes(String(classId))) return res.status(403).json({ message: 'You are not assigned to this class' });
-    }
-
-    const normalized = (records || []).map(r => {
-      let sid = r.studentId;
-      if (sid && mongoose.Types.ObjectId.isValid(String(sid))) sid = new mongoose.Types.ObjectId(String(sid));
-      return { studentId: sid, present: !!r.present, note: r.note || '', durationMinutes: Number(r.durationMinutes || 0) };
-    });
-
-    // Edit by id -> stricter ownership check for teachers
-    if (_id || id) {
-      const aid = _id || id;
-      const q = mongoose.Types.ObjectId.isValid(String(aid)) ? { _id: new mongoose.Types.ObjectId(String(aid)) } : { _id: aid };
-      const existing = await Attendance.findOne(q).lean();
-      if (!existing) return res.status(404).json({ message: 'Attendance not found' });
-
-      if (req.user.role === 'teacher') {
-        if (!existing.teacherId || String(existing.teacherId) !== String(req.user._id)) return res.status(403).json({ message: 'You may only edit attendance you created' });
-        const t = await Teacher.findById(req.user._id).lean();
-        const allowed = (t.classIds || []).map(x => String(x));
-        if (!allowed.includes(String(existing.classId))) return res.status(403).json({ message: 'You are not assigned to this class' });
-      }
-
-      const update = {
-        $set: {
-          records: normalized,
-          updatedAt: new Date(),
-          teacherId: teacherId,
-          date: dt,
-          classId: qClassId,
-          schoolId: req.user.schoolId || undefined
-        }
-      };
-      if (typeof subjectId !== 'undefined') {
-        update.$set.subjectId = subjectId ? (mongoose.Types.ObjectId.isValid(String(subjectId)) ? new mongoose.Types.ObjectId(String(subjectId)) : subjectId) : null;
-      }
-      if (typeof update.$set.schoolId === 'undefined') delete update.$set.schoolId;
-      if (typeof update.$set.subjectId === 'undefined') delete update.$set.subjectId;
-
-      const att = await Attendance.findOneAndUpdate(q, update, { new: true }).lean();
-      return res.json({ ok: true, attendance: att });
-    }
-
-    // Upsert by classId + date + subjectId
-    const query = { classId: qClassId, date: dt };
-    if (typeof subjectId !== 'undefined') {
-      query.subjectId = subjectId ? (mongoose.Types.ObjectId.isValid(String(subjectId)) ? new mongoose.Types.ObjectId(String(subjectId)) : subjectId) : null;
-    }
-
-    const update = {
-      $set: {
-        records: normalized,
-        updatedAt: new Date(),
-        teacherId: teacherId,
-        schoolId: req.user.schoolId || undefined
-      },
-      $setOnInsert: { createdAt: new Date() }
-    };
-
-    const opts = { upsert: true, new: true, setDefaultsOnInsert: true };
+   router.post('/', auth, roles(['admin','manager','teacher']), async (req, res) => {
     try {
-      const att = await Attendance.findOneAndUpdate(query, update, opts).lean();
-      return res.json({ ok: true, attendance: att });
-    } catch (errUpsert) {
-      console.warn('Upsert failed, attempt fallback', errUpsert && errUpsert.message);
-      const existing = await Attendance.findOne(query).lean();
-      if (existing && existing._id) {
-        const att = await Attendance.findByIdAndUpdate(existing._id, { $set: { records: normalized, updatedAt: new Date(), teacherId, schoolId: req.user.schoolId || undefined } }, { new: true }).lean();
-        return res.json({ ok: true, attendance: att, fallback: true });
+      // helper to format date (uses existing fmtDate in file)
+      const processSingle = async (payload) => {
+        // payload can be { _id?, id?, classId, subjectId, date, records = [], teacherId? }
+        const { _id, id, classId, subjectId, date, records = [], teacherId: postedTeacherId } = payload || {};
+  
+        if (!classId) return { ok: false, status: 400, message: 'classId required', item: payload };
+  
+        const dt = date ? fmtDate(date) : fmtDate(new Date());
+        const qClassId = mongoose.Types.ObjectId.isValid(String(classId)) ? new mongoose.Types.ObjectId(String(classId)) : classId;
+  
+        // decide teacherId (teachers can't impersonate others)
+        let teacherId = req.user._id;
+        if (req.user.role !== 'teacher' && postedTeacherId) {
+          teacherId = mongoose.Types.ObjectId.isValid(String(postedTeacherId)) ? new mongoose.Types.ObjectId(String(postedTeacherId)) : postedTeacherId;
+        }
+  
+        // teacher permission: teacher may only act on their classes
+        if (req.user.role === 'teacher') {
+          const t = await Teacher.findById(req.user._id).lean();
+          if (!t) return { ok: false, status: 403, message: 'Teacher record not found', item: payload };
+          const allowed = (t.classIds || []).map(x => String(x));
+          if (!allowed.includes(String(classId))) return { ok: false, status: 403, message: 'You are not assigned to this class', item: payload };
+        }
+  
+        // normalize records
+        const normalized = (records || []).map(r => {
+          let sid = r.studentId;
+          if (sid && mongoose.Types.ObjectId.isValid(String(sid))) sid = new mongoose.Types.ObjectId(String(sid));
+          return { studentId: sid, present: !!r.present, note: r.note || '', durationMinutes: Number(r.durationMinutes || 0) };
+        });
+  
+        // Edit by id -> stricter ownership check for teachers
+        if (_id || id) {
+          const aid = _id || id;
+          const q = mongoose.Types.ObjectId.isValid(String(aid)) ? { _id: new mongoose.Types.ObjectId(String(aid)) } : { _id: aid };
+          const existing = await Attendance.findOne(q).lean();
+          if (!existing) return { ok: false, status: 404, message: 'Attendance not found', item: payload };
+  
+          if (req.user.role === 'teacher') {
+            if (!existing.teacherId || String(existing.teacherId) !== String(req.user._id)) return { ok: false, status: 403, message: 'You may only edit attendance you created', item: payload };
+            const t = await Teacher.findById(req.user._id).lean();
+            const allowed = (t.classIds || []).map(x => String(x));
+            if (!allowed.includes(String(existing.classId))) return { ok: false, status: 403, message: 'You are not assigned to this class', item: payload };
+          }
+  
+          const update = {
+            $set: {
+              records: normalized,
+              updatedAt: new Date(),
+              teacherId: teacherId,
+              date: dt,
+              classId: qClassId,
+              schoolId: req.user.schoolId || undefined
+            }
+          };
+          if (typeof subjectId !== 'undefined') {
+            update.$set.subjectId = subjectId ? (mongoose.Types.ObjectId.isValid(String(subjectId)) ? new mongoose.Types.ObjectId(String(subjectId)) : subjectId) : null;
+          }
+          if (typeof update.$set.schoolId === 'undefined') delete update.$set.schoolId;
+          if (typeof update.$set.subjectId === 'undefined') delete update.$set.subjectId;
+  
+          const att = await Attendance.findOneAndUpdate(q, update, { new: true }).lean();
+          return { ok: true, attendance: att };
+        }
+  
+        // Upsert by classId + date + subjectId
+        const query = { classId: qClassId, date: dt };
+        if (typeof subjectId !== 'undefined') {
+          query.subjectId = subjectId ? (mongoose.Types.ObjectId.isValid(String(subjectId)) ? new mongoose.Types.ObjectId(String(subjectId)) : subjectId) : null;
+        }
+  
+        const update = {
+          $set: {
+            records: normalized,
+            updatedAt: new Date(),
+            teacherId: teacherId,
+            schoolId: req.user.schoolId || undefined
+          },
+          $setOnInsert: { createdAt: new Date() }
+        };
+  
+        const opts = { upsert: true, new: true, setDefaultsOnInsert: true };
+  
+        try {
+          const att = await Attendance.findOneAndUpdate(query, update, opts).lean();
+          return { ok: true, attendance: att };
+        } catch (errUpsert) {
+          // fallback when upsert race/duplicate occurs: find existing and update
+          console.warn('Upsert failed, attempt fallback', errUpsert && errUpsert.message);
+          try {
+            const existing = await Attendance.findOne(query).lean();
+            if (existing && existing._id) {
+              const att = await Attendance.findByIdAndUpdate(existing._id, { $set: { records: normalized, updatedAt: new Date(), teacherId, schoolId: req.user.schoolId || undefined } }, { new: true }).lean();
+              return { ok: true, attendance: att, fallback: true };
+            }
+            // If no existing was found, rethrow
+            throw errUpsert;
+          } catch (fallbackErr) {
+            // bubble specific error
+            return { ok: false, status: 500, message: fallbackErr && fallbackErr.message ? fallbackErr.message : String(fallbackErr), item: payload };
+          }
+        }
+      }; // end processSingle
+  
+      // If batch mode: body.items is an array -> process each item
+      if (Array.isArray(req.body.items) && req.body.items.length > 0) {
+        const items = req.body.items;
+        const results = [];
+        for (const it of items) {
+          try {
+            const r = await processSingle(it);
+            // normalize response object per item
+            if (r && r.ok) results.push({ ok: true, attendance: r.attendance, fallback: r.fallback || false });
+            else results.push({ ok: false, message: r.message || 'Failed', status: r.status || 500, item: it });
+          } catch (e) {
+            console.error('Batch item processing error', e && e.stack ? e.stack : e);
+            results.push({ ok: false, message: e && e.message ? e.message : String(e), item: it });
+          }
+        }
+        return res.json({ ok: true, results });
       }
-      throw errUpsert;
+  
+      // Otherwise treat as single (legacy) request: use the same payload shape as before
+      const singlePayload = {
+        _id: req.body._id || req.body.id,
+        id: req.body.id,
+        classId: req.body.classId,
+        subjectId: typeof req.body.subjectId !== 'undefined' ? req.body.subjectId : undefined,
+        date: req.body.date,
+        records: req.body.records || [],
+        teacherId: req.body.teacherId
+      };
+  
+      const singleRes = await processSingle(singlePayload);
+      if (singleRes && singleRes.ok) return res.json({ ok: true, attendance: singleRes.attendance, fallback: singleRes.fallback || false });
+  
+      // handle known failures
+      if (singleRes && singleRes.status) return res.status(singleRes.status).json({ message: singleRes.message || 'Error', item: singleRes.item });
+      return res.status(500).json({ message: singleRes && singleRes.message ? singleRes.message : 'Server error' });
+  
+    } catch (err) {
+      console.error('POST /attendances error', err && err.stack ? err.stack : err);
+      if (err && err.code === 11000) return res.status(400).json({ message: 'Attendance already exists (unique constraint)' });
+      res.status(500).json({ message: 'Server error', err: err && err.message ? err.message : String(err) });
     }
-  } catch (err) {
-    console.error('POST /attendances error', err && err.stack ? err.stack : err);
-    if (err && err.code === 11000) return res.status(400).json({ message: 'Attendance already exists (unique constraint)' });
-    res.status(500).json({ message: 'Server error', err: err && err.message ? err.message : String(err) });
-  }
-});
-
+  });
+  
 /* --------------------------
    GET attendance by class+date+subject (view)
    GET /attendances?classId=...&date=...&subjectId=...
