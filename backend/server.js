@@ -45,6 +45,8 @@ const recycleRouter = require('./routes/recycle');
 // near other route imports at top
 const developerRoutes = require('./routes/developer');
 
+const storiesRouter = require('./routes/stories');
+
 let chatsRouter = null;
 try { chatsRouter = require('./routes/chats'); } catch(e){ /* optional */ }
 
@@ -229,6 +231,8 @@ app.use('/api/math-game', gamesRouter);
 
 // ... later, after other app.use routes:
 app.use('/api/developers', developerRoutes);
+
+app.use('/api/stories', storiesRouter);
 
 // root
 
