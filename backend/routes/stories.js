@@ -309,6 +309,44 @@ router.post('/:id/comments', requireAuth, async (req,res) => {
   } catch (err) { console.error(err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
+// POST /api/stories/:id/comments/:commentId/reactions
+// requireAuth must be applied earlier in the router (like other routes)
+router.post('/:id/comments/:commentId/reactions', requireAuth, async (req, res) => {
+  try {
+    const type = String(req.body.type || '').trim();
+    if(!type) return res.status(400).json({ ok:false, error:'type required' });
+
+    const s = await Story.findById(req.params.id);
+    if(!s) return res.status(404).json({ ok:false, error:'Not found' });
+
+    const cid = req.params.commentId;
+    const comment = (s.comments || []).find(c => String(c.id || c._id) === String(cid));
+    if(!comment) return res.status(404).json({ ok:false, error:'Comment not found' });
+
+    const uid = req.user && (req.user.uid || req.user.id || req.user._id) || null;
+    // initialize reactions array on the comment if missing
+    comment.reactions = comment.reactions || [];
+
+    // remove any previous reaction by same user
+    if(uid){
+      const existingIdx = comment.reactions.findIndex(r => String(r.userId) === String(uid));
+      if(existingIdx >= 0) comment.reactions.splice(existingIdx, 1);
+    }
+
+    // push new reaction
+    comment.reactions.push({ userId: uid, userName: req.user && (req.user.name || req.user.fullname || req.user.username) || '', type, createdAt: new Date() });
+
+    await s.save();
+
+    // return updated comment (and optionally story summary)
+    const updatedComment = (s.comments || []).find(c => String(c.id || c._id) === String(cid));
+    res.json({ ok:true, comment: updatedComment, story: s });
+  } catch (err) {
+    console.error('POST comment reaction', err);
+    res.status(500).json({ ok:false, error: err.message || 'Server error' });
+  }
+});
+
 router.delete('/:id/comments/:commentId', requireAuth, async (req,res) => {
   try {
     const s = await Story.findById(req.params.id);
