@@ -1,225 +1,196 @@
 // backend/routes/developer.js
+'use strict';
+
 const express = require('express');
+const router = express.Router();
+const Developer = require('../models/Developer');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const Developer = require('../models/Developer');
+const jwt = require('jsonwebtoken');
+const { randomUUID } = require('crypto'); // <= use built-in Node uuid replacement
 
-const router = express.Router();
-
-// Upload folder for developer images (ensure uploads/developers exists)
-const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads', 'developers');
-if (!fs.existsSync(UPLOAD_ROOT)) fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
+const UPLOADS_DIR = path.join(__dirname, '..', 'uploads', 'developers');
+try { if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true }); } catch(e){ console.warn('mkdir failed', e && e.message); }
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_ROOT),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const base = Date.now() + '-' + Math.random().toString(36).slice(2,8);
-    cb(null, base + ext);
-  }
+  destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${Math.round(Math.random()*1e6)}${path.extname(file.originalname).toLowerCase()}`)
 });
 const upload = multer({
   storage,
-  limits: { fileSize: 3 * 1024 * 1024 }, // 3MB limit
+  limits: { fileSize: 6 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = ['.png', '.jpg', '.jpeg', '.webp'];
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, allowed.includes(ext));
+    const ok = /image\/(png|jpe?g|webp|gif)/i.test(file.mimetype);
+    cb(null, ok);
   }
 });
 
-// requireAdmin: adapt to your auth middleware. Here we check req.user.role === 'admin'.
-function requireAdmin(req, res, next) {
-  if (req.user && req.user.role === 'admin') return next();
-  // For quick testing without auth you can pass header x-admin-demo:1 (NOT for production)
-  if (req.get('x-admin-demo') === '1') return next();
-  return res.status(403).json({ error: 'admin required' });
-}
-
-/* Validation */
-function validateDeveloperPayload(body) {
-  const errors = [];
-  if (!body.name || String(body.name).trim().length < 2) errors.push('name required');
-  if (body.contact && body.contact.email) {
-    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!re.test(body.contact.email)) errors.push('invalid email');
-  }
-  return errors;
-}
-
-/* GET /api/developers */
-router.get('/', async (req, res) => {
+// Very small auth helpers - adapt to your auth system or use your existing middleware
+function requireAuth(req,res,next){
+  const auth = req.headers.authorization;
+  if(!auth) return res.status(401).json({ ok:false, error:'Unauthorized' });
+  const parts = auth.split(/\s+/);
+  if(parts.length !== 2) return res.status(401).json({ ok:false, error:'Unauthorized' });
+  const token = parts[1];
   try {
+    const secret = process.env.JWT_SECRET || 'secret';
+    const payload = jwt.verify(token, secret);
+    req.user = payload;
+    next();
+  } catch (err) {
+    return res.status(401).json({ ok:false, error:'Invalid token' });
+  }
+}
+function requireAdmin(req,res,next){
+  if(!req.user) return res.status(401).json({ ok:false, error:'Unauthorized' });
+  if(req.user.role !== 'admin') return res.status(403).json({ ok:false, error:'Forbidden' });
+  next();
+}
+
+/**
+ * GET /api/developers
+ * query params: q, visible, page, limit
+ */
+router.get('/', async (req,res) => {
+  try {
+    // quick ping support for client auto-detection
+    if (req.query._ping) return res.json({ ok: true, items: [] });
+
     const q = (req.query.q || '').trim();
-    const visible = req.query.visible === 'true';
+    const visibleOnly = req.query.visible === 'true';
+    const page = Math.max(1, parseInt(req.query.page || '1', 10));
+    const limit = Math.min(1000, parseInt(req.query.limit || '100', 10));
+    const skip = (page - 1) * limit;
     const filter = {};
-    if (visible) filter.visible = true;
-    if (q) {
-      // simple text search across name, tagline, bio, projects.title, skills items
-      const re = new RegExp(q.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i');
+    if(visibleOnly) filter.visible = true;
+    if(q){
+      const rx = new RegExp(q.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&'),'i');
       filter.$or = [
-        { name: re },
-        { tagline: re },
-        { bio: re },
-        { 'projects.title': re },
-        { 'skills.items': re }
+        { name: rx },
+        { tagline: rx },
+        { bio: rx },
+        { 'contact.github': rx },
+        { 'projects.title': rx },
+        { 'projects.summary': rx }
       ];
     }
-    const items = await Developer.find(filter).sort({ order: 1, name: 1 }).lean().exec();
-    res.json({ items });
-  } catch (e) {
-    console.error('GET /developers error', e);
-    res.status(500).json({ error: 'server error' });
+    const items = await Developer.find(filter).sort({ order: 1, createdAt: -1 }).skip(skip).limit(limit).lean();
+    res.json({ ok:true, items });
+  } catch(err){
+    console.error('GET /api/developers failed', err);
+    res.status(500).json({ ok:false, error: err.message || 'Server error' });
   }
 });
 
-/* GET single */
-router.get('/:id', async (req, res) => {
+// GET /api/developers/:id
+router.get('/:id', async (req,res) => {
   try {
-    const dev = await Developer.findById(req.params.id).lean().exec();
-    if (!dev) return res.status(404).json({ error: 'not found' });
-    res.json({ developer: dev });
-  } catch (e) {
-    console.error('GET /developers/:id', e);
-    res.status(500).json({ error: 'server error' });
-  }
+    const dev = await Developer.findById(req.params.id).lean();
+    if(!dev) return res.status(404).json({ ok:false, error:'Not found' });
+    res.json({ ok:true, developer: dev });
+  } catch(err){ console.error(err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
-/* POST create */
-router.post('/', requireAdmin, async (req, res) => {
+// POST /api/developers (admin)
+router.post('/', requireAuth, requireAdmin, async (req,res) => {
   try {
     const body = req.body || {};
-    const errors = validateDeveloperPayload(body);
-    if (errors.length) return res.status(400).json({ error: 'validation', details: errors });
+    if(!body.name) return res.status(400).json({ ok:false, error:'name required' });
     const dev = new Developer({
-      name: body.name,
+      name: String(body.name),
       tagline: body.tagline || '',
       bio: body.bio || '',
       contact: body.contact || {},
       skills: Array.isArray(body.skills) ? body.skills : [],
-      projects: Array.isArray(body.projects) ? body.projects : [],
       images: Array.isArray(body.images) ? body.images : [],
-      order: typeof body.order === 'number' ? body.order : 0,
-      visible: typeof body.visible === 'boolean' ? body.visible : true
+      projects: Array.isArray(body.projects) ? body.projects : [],
+      visible: typeof body.visible === 'boolean' ? body.visible : true,
+      order: typeof body.order === 'number' ? body.order : 1000
     });
     await dev.save();
-    res.status(201).json({ developer: dev });
-  } catch (e) {
-    console.error('POST /developers', e);
-    res.status(500).json({ error: 'server error' });
-  }
+    res.json({ ok:true, developer: dev });
+  } catch(err){ console.error('POST /api/developers', err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
-/* PUT update */
-router.put('/:id', requireAdmin, async (req, res) => {
+// PUT /api/developers/:id (admin)
+router.put('/:id', requireAuth, requireAdmin, async (req,res) => {
   try {
     const body = req.body || {};
-    const errors = validateDeveloperPayload(body);
-    if (errors.length) return res.status(400).json({ error: 'validation', details: errors });
-    const dev = await Developer.findById(req.params.id);
-    if (!dev) return res.status(404).json({ error: 'not found' });
-    dev.name = body.name || dev.name;
-    dev.tagline = body.tagline || dev.tagline;
-    dev.bio = body.bio || dev.bio;
-    dev.contact = body.contact || dev.contact;
-    dev.skills = Array.isArray(body.skills) ? body.skills : dev.skills;
-    dev.projects = Array.isArray(body.projects) ? body.projects : dev.projects;
-    dev.images = Array.isArray(body.images) ? body.images : dev.images;
-    if (typeof body.order === 'number') dev.order = body.order;
-    if (typeof body.visible === 'boolean') dev.visible = body.visible;
-    await dev.save();
-    res.json({ developer: dev });
-  } catch (e) {
-    console.error('PUT /developers/:id', e);
-    res.status(500).json({ error: 'server error' });
-  }
+    const update = {};
+    if(body.name !== undefined) update.name = body.name;
+    if(body.tagline !== undefined) update.tagline = body.tagline;
+    if(body.bio !== undefined) update.bio = body.bio;
+    if(body.contact !== undefined) update.contact = body.contact;
+    if(body.skills !== undefined) update.skills = body.skills;
+    if(body.projects !== undefined) update.projects = body.projects;
+    if(body.visible !== undefined) update.visible = body.visible;
+    if(body.order !== undefined) update.order = body.order;
+    const dev = await Developer.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
+    if(!dev) return res.status(404).json({ ok:false, error:'Not found' });
+    res.json({ ok:true, developer: dev });
+  } catch(err){ console.error('PUT /api/developers/:id', err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
-/* DELETE developer */
-router.delete('/:id', requireAdmin, async (req, res) => {
+// DELETE /api/developers/:id (admin)
+router.delete('/:id', requireAuth, requireAdmin, async (req,res) => {
   try {
-    const dev = await Developer.findById(req.params.id);
-    if (!dev) return res.status(404).json({ error: 'not found' });
-
-    // delete local uploaded images (best-effort)
-    (dev.images || []).forEach(img => {
-      if (img.url && img.url.startsWith('/uploads/')) {
-        const filepath = path.join(__dirname, '..', img.url.replace(/^\//, ''));
-        try { if (fs.existsSync(filepath)) fs.unlinkSync(filepath); } catch(e){ /* ignore */ }
-      }
-    });
-
-    await dev.remove();
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('DELETE /developers/:id', e);
-    res.status(500).json({ error: 'server error' });
-  }
+    const dev = await Developer.findByIdAndDelete(req.params.id);
+    if(!dev) return res.status(404).json({ ok:false, error:'Not found' });
+    res.json({ ok:true, deletedId: req.params.id });
+  } catch(err){ console.error('DELETE /api/developers/:id', err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
-/* POST images upload */
-router.post('/:id/images', requireAdmin, upload.single('image'), async (req, res) => {
+// POST /api/developers/:id/images (upload image) (admin)
+router.post('/:id/images', requireAuth, requireAdmin, upload.single('image'), async (req,res) => {
   try {
+    if(!req.file) return res.status(400).json({ ok:false, error:'No file' });
     const dev = await Developer.findById(req.params.id);
-    if (!dev) return res.status(404).json({ error: 'not found' });
-    if (!req.file) return res.status(400).json({ error: 'no file' });
-
-    const img = {
-      id: String(Date.now()) + '-' + Math.random().toString(36).slice(2,6),
-      url: '/uploads/developers/' + req.file.filename,
-      alt: req.body.alt || '',
-      flipAxis: req.body.flipAxis || 'rotateY',
-      flipIntervalSeconds: Number(req.body.flipIntervalSeconds || 5),
-      order: dev.images.length
-    };
+    if(!dev){
+      fs.unlink(req.file.path, ()=>{});
+      return res.status(404).json({ ok:false, error:'Developer not found' });
+    }
+    const id = (typeof randomUUID === 'function') ? randomUUID() : `${Date.now()}-${Math.round(Math.random()*1e6)}`;
+    const rel = `/uploads/developers/${path.basename(req.file.path)}`;
+    const img = { id, url: rel, alt: req.body.alt || '', flipAxis: req.body.flipAxis || 'rotateY', order: (dev.images.length || 0), flipIntervalSeconds: Number(req.body.flipIntervalSeconds || 5) };
     dev.images.push(img);
     await dev.save();
-    res.status(201).json({ image: img });
-  } catch (e) {
-    console.error('POST /developers/:id/images', e);
-    res.status(500).json({ error: 'server error' });
-  }
+    res.json({ ok:true, image: img });
+  } catch(err){ console.error('POST /images', err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
-/* PUT image meta */
-router.put('/:id/images/:imageId', requireAdmin, async (req, res) => {
+// PUT /api/developers/:id/images/:imageId (update image meta) (admin)
+router.put('/:id/images/:imageId', requireAuth, requireAdmin, async (req,res) => {
   try {
     const dev = await Developer.findById(req.params.id);
-    if (!dev) return res.status(404).json({ error: 'not found' });
-    const img = dev.images.id ? dev.images.find(i => String(i.id) === String(req.params.imageId)) : dev.images.find(i => String(i.id) === String(req.params.imageId));
-    if (!img) return res.status(404).json({ error: 'image not found' });
-    if (req.body.alt !== undefined) img.alt = req.body.alt;
-    if (req.body.flipAxis) img.flipAxis = req.body.flipAxis;
-    if (req.body.flipIntervalSeconds) img.flipIntervalSeconds = Number(req.body.flipIntervalSeconds);
-    if (req.body.order !== undefined) img.order = Number(req.body.order);
+    if(!dev) return res.status(404).json({ ok:false, error:'Developer not found' });
+    const img = dev.images.find(i => i.id === req.params.imageId);
+    if(!img) return res.status(404).json({ ok:false, error:'Image not found' });
+    if(req.body.alt !== undefined) img.alt = String(req.body.alt || '');
+    if(req.body.flipAxis !== undefined) img.flipAxis = String(req.body.flipAxis || 'rotateY');
+    if(req.body.order !== undefined) img.order = Number(req.body.order || 0);
+    if(req.body.flipIntervalSeconds !== undefined) img.flipIntervalSeconds = Number(req.body.flipIntervalSeconds || 5);
     await dev.save();
-    res.json({ image: img });
-  } catch (e) {
-    console.error('PUT /developers/:id/images/:imageId', e);
-    res.status(500).json({ error: 'server error' });
-  }
+    res.json({ ok:true, image: img });
+  } catch(err){ console.error('PUT image meta', err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
-/* DELETE image */
-router.delete('/:id/images/:imageId', requireAdmin, async (req,res) => {
+// DELETE /api/developers/:id/images/:imageId (admin)
+router.delete('/:id/images/:imageId', requireAuth, requireAdmin, async (req,res) => {
   try {
     const dev = await Developer.findById(req.params.id);
-    if (!dev) return res.status(404).json({ error: 'not found' });
-    const idx = dev.images.findIndex(i => String(i.id) === String(req.params.imageId));
-    if (idx === -1) return res.status(404).json({ error: 'image not found' });
-    const removed = dev.images.splice(idx, 1)[0];
-    // delete file if local
-    if (removed && removed.url && removed.url.startsWith('/uploads/')) {
-      const filepath = path.join(__dirname, '..', removed.url.replace(/^\//, ''));
-      try { if (fs.existsSync(filepath)) fs.unlinkSync(filepath); } catch(e){ /* ignore */ }
-    }
+    if(!dev) return res.status(404).json({ ok:false, error:'Developer not found' });
+    const idx = dev.images.findIndex(i => i.id === req.params.imageId);
+    if(idx === -1) return res.status(404).json({ ok:false, error:'Image not found' });
+    const img = dev.images[idx];
+    try {
+      const filePath = path.join(UPLOADS_DIR, path.basename(img.url));
+      if(fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch(e){}
+    dev.images.splice(idx,1);
     await dev.save();
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('DELETE image error', e);
-    res.status(500).json({ error: 'server error' });
-  }
+    res.json({ ok:true, deletedId: req.params.imageId });
+  } catch(err){ console.error('DELETE image', err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
 module.exports = router;
