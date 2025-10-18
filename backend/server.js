@@ -1,9 +1,7 @@
-// backend/server.js
 'use strict';
 
 const express = require('express');
 const mongoose = require('mongoose');
-
 const cors = require('cors');
 const compression = require('compression');
 const fs = require('fs');
@@ -11,10 +9,7 @@ const path = require('path');
 const http = require('http');
 require('dotenv').config();
 
-// -----------------------------
-// Route imports (unchanged)
-// -----------------------------
-const authRoutes = require('./routes/auth');
+// your route imports (keep your other routes as before)
 const studentRoutes = require('./routes/students');
 const teacherRoutes = require('./routes/teachers');
 const classRoutes = require('./routes/classes');
@@ -38,130 +33,43 @@ const helpers = require('./routes/helpers');
 const helpRoutess = require('./routes/help');
 const resultsRouter = require('./routes/results');
 const recurringRoutes = require('./routes/recurring');
-
 const gamesRouter = require('./routes/games');
 const recycleRouter = require('./routes/recycle');
-
-// near other route imports at top
 const developerRoutes = require('./routes/developer');
-
 const storiesRouter = require('./routes/stories');
-
-
 let chatsRouter = null;
 try { chatsRouter = require('./routes/chats'); } catch(e){ /* optional */ }
 
-// Models used in cron (optional)
-const cron = require('node-cron');
-const RecurringCharge = require('./models/RecurringCharge');
-const Charge = require('./models/Charge');
-const Student = require('./models/Student');
-const Teacher = require('./models/Teacher');
-
-// -----------------------------
-// App init + uploads folder
-// -----------------------------
 const app = express();
+
+// ensure uploads dir
 const uploadsDir = path.join(__dirname, 'uploads');
 try { if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true }); } catch(e){ console.warn('mkdir uploads failed', e && e.message); }
 
-// -----------------------------
-// Allowed origins / CORS Setup
-// -----------------------------
-/*
- .env should contain:
- FRONTEND_ORIGINS=https://luxury-flan-d59494.netlify.app,https://*.netlify.app,http://127.0.0.1:5501,http://localhost:5501,http://localhost:5000
-*/
-
-const rawEnvOrigins = String(process.env.FRONTEND_ORIGINS || process.env.FRONTEND_ORIGIN || '').trim();
-const envOrigins = rawEnvOrigins.length ? rawEnvOrigins.split(',').map(s => (s || '').trim()).filter(Boolean) : [];
-
+// CORS setup - allow PATCH in preflight and common headers
+const envOrigins = (process.env.FRONTEND_ORIGINS || process.env.FRONTEND_ORIGIN || '')
+  .split(',').map(s => s && s.trim()).filter(Boolean);
 const defaultDevOrigins = [
   'http://127.0.0.1:5501',
   'http://localhost:5501',
   'http://127.0.0.1:5000',
   'http://localhost:5000'
 ];
-
 const allowedOrigins = Array.from(new Set([ ...envOrigins, ...defaultDevOrigins ]));
 
-// support Netlify previews like: https://something--site.netlify.app
-const netlifyPreviewRegex = /\.netlify\.app$/i;
-
-// Optional: Allow all (useful for quick debugging) - set env DISABLE_CORS_CHECK=1 to enable (not recommended for production)
-const ALLOW_ALL = process.env.DISABLE_CORS_CHECK === '1' || process.env.DISABLE_CORS_CHECK === 'true';
-
-console.log('CORS setup: ALLOW_ALL=', ALLOW_ALL);
-console.log('CORS setup: allowedOrigins=', allowedOrigins);
-console.log('CORS setup: raw FRONTEND_ORIGINS=', rawEnvOrigins);
-
-// Helper to test an origin
-function originIsAllowed(origin) {
-  if (!origin) return true; // non-browser (curl, server-to-server) requests may not have origin
-  if (ALLOW_ALL) return true;
-  if (allowedOrigins.indexOf(origin) !== -1) return true;
-  if (netlifyPreviewRegex.test(origin)) return true;
-  return false;
-}
-
-// -----------------------------
-// Preflight / quick CORS header middleware
-// -----------------------------
-// This middleware ensures the browser sees Access-Control-Allow-Origin for preflight requests.
-// It OUGHT to be safe because originIsAllowed controls which origins get the header.
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin && originIsAllowed(origin)) {
-    // explicit permissive headers for allowed origins
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept');
-  }
-  // If this is a preflight, respond quickly (CORS headers already set above for allowed origins)
-  if (req.method === 'OPTIONS') {
-    return res.status(origin && originIsAllowed(origin) ? 204 : 403).end();
-  }
-  next();
-});
-
-// -----------------------------
-// cors() middleware (keeps internal express CORS behavior consistent)
-// -----------------------------
 const corsOptions = {
-  origin: (origin, cb) => {
-    // allow non-browser requests where origin is undefined
+  origin: function(origin, cb) {
     if (!origin) return cb(null, true);
-    if (originIsAllowed(origin)) return cb(null, true);
-    // Deny
-    return cb(new Error('CORS origin denied: ' + origin), false);
+    if (allowedOrigins.indexOf(origin) !== -1) return cb(null, true);
+    return cb(new Error('CORS origin denied: ' + origin));
   },
   credentials: true,
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept']
 };
-
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions)); // respond to preflight
 
-
-// --- CORS setup (allow all when debugging) ---
-const DEBUG_ALLOW_ALL = process.env.DEBUG_ALLOW_ALL_CORS === '1';
-
-if (DEBUG_ALLOW_ALL) {
-  console.warn('DEBUG_ALLOW_ALL_CORS enabled — allowing all origins (temporary)');
-  app.use(cors({ origin: true, credentials: true }));
-  app.options('*', cors({ origin: true, credentials: true }));
-} else {
-  // existing robust corsOptions code you already have
-  app.use(cors(corsOptions));
-  app.options('*', cors(corsOptions));
-}
-
-// -----------------------------
-// Express middleware
-// -----------------------------
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(compression());
@@ -170,35 +78,7 @@ app.use(compression());
 app.use('/uploads', express.static(uploadsDir));
 app.use('/uploads/exams', express.static(path.join(process.cwd(), 'uploads', 'exams')));
 
-// -----------------------------
-// create HTTP server & socket.io
-// -----------------------------
-const server = http.createServer(app);
-const { Server } = require('socket.io');
-
-const io = new Server(server, {
-  cors: {
-    origin: (origin, cb) => {
-      // origin may be undefined for server-to-server
-      if (!origin) return cb(null, true);
-      if (ALLOW_ALL) return cb(null, true);
-      if (allowedOrigins.indexOf(origin) !== -1) return cb(null, true);
-      if (netlifyPreviewRegex.test(origin)) return cb(null, true);
-      console.warn('Socket.IO CORS denied for origin:', origin);
-      return cb('origin not allowed', false);
-    },
-    methods: ['GET','POST'],
-    credentials: true
-  },
-  pingInterval: 25000,
-  pingTimeout: 60000
-});
-
-app.set('io', io);
-
-// -----------------------------
-// mount routes (after CORS middleware is active)
-// -----------------------------
+// mount routes
 app.use('/api/auth', authRoutes);
 app.use('/api/students', studentRoutes);
 app.use('/api/teachers', teacherRoutes);
@@ -226,19 +106,13 @@ if (chatsRouter) app.use('/api/chats', chatsRouter);
 app.use('/api/recurring', recurringRoutes);
 app.use('/api/recycle', recycleRouter);
 app.use('/api/math-game', gamesRouter);
-
-
-// ... later, after other app.use routes:
 app.use('/api/developers', developerRoutes);
-
 app.use('/api/stories', storiesRouter);
 
 // root
 app.get('/', (req, res) => res.json({ ok:true, message:'School Manager API' }));
 
-// -----------------------------
-// global error handler (optional)
-// -----------------------------
+// global error handler
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err && (err.stack || err));
   if (!res.headersSent) {
@@ -250,22 +124,32 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-// -----------------------------
-// connect mongodb & start cron etc
-// -----------------------------
+// connect mongodb
 const PORT = Number(process.env.PORT || 5000);
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/schooldb';
-
 mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(()=> console.log('MongoDB connected'))
   .catch(err => console.error('MongoDB connect error', err));
 
-// --- Socket auth & events (unchanged) ---
+// create server + socket.io (unchanged)
+const server = http.createServer(app);
+const { Server } = require('socket.io');
+const io = new Server(server, {
+  cors: { origin: allowedOrigins, methods: ['GET','POST'], credentials: true },
+  pingInterval: 25000, pingTimeout: 60000
+});
+app.set('io', io);
+
+// socket auth and events (same as your existing code)
+// ... (keep your socket auth/event code here - unchanged from your file)
+// This expects a JWT token sent by the socket client as: io({ auth: { token } })
 io.use(async (socket, next) => {
   try {
+    // token may be inside handshake.auth.token
     const token = socket.handshake && socket.handshake.auth && socket.handshake.auth.token;
     if (!token) return next(new Error('Authentication error: token missing'));
 
+    // verify token (adjust to your auth strategy if not JWT)
     const jwt = require('jsonwebtoken');
     const secret = process.env.JWT_SECRET || 'secret';
     const payload = await new Promise((resolve, reject) => {
@@ -275,6 +159,7 @@ io.use(async (socket, next) => {
       });
     });
 
+    // attach user payload to socket
     socket.user = payload || {};
     return next();
   } catch (err) {
@@ -283,14 +168,17 @@ io.use(async (socket, next) => {
   }
 });
 
+// --- Socket events (chat join/leave/typing etc) ---
 io.on('connection', (socket) => {
   const user = socket.user || {};
   console.log('Socket connected:', socket.id, 'user=', user && (user._id || user.id || user.uid));
 
+  // join a class room
   socket.on('joinClass', (classId) => {
     try {
       if (!classId) return;
       socket.join(`class_${classId}`);
+      // optionally emit presence / joined event to room
       socket.to(`class_${classId}`).emit('chat:userJoined', { userId: user._id || user.id || user.uid, fullname: user.fullname || user.name });
     } catch (e) { console.warn('joinClass error', e); }
   });
@@ -311,47 +199,63 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', (reason) => {
+    // handle disconnect if needed
     console.log('Socket disconnected', socket.id, reason);
   });
 });
 
-// Optional: wire socket-zoom if present (unchanged)
+// --- optional: Wire Zoom sockets if you have socket-zoom.js (safe guard) ---
 try {
   const initZoomSocket = require('./socket-zoom');
   if (typeof initZoomSocket === 'function') {
     try { initZoomSocket(io); } catch (e) { console.warn('initZoomSocket error', e && e.message ? e.message : e); }
   }
 } catch (e) {
-  console.warn('socket-zoom module not present or failed to load');
+  // not critical
+ console.warn('socket-zoom module not present or failed to load');
 }
 
-// Optional recurring cron (unchanged)
+// Optional: disable automatic cron in certain environments
 const CRON_DISABLED = process.env.DISABLE_RECURRING_CRON === '1' || process.env.DISABLE_RECURRING_CRON === 'true';
+
 if (!CRON_DISABLED) {
+  // DAILY RECURRING CHARGES JOB - runs once per day at 00:10 server time
   cron.schedule('10 0 * * *', async () => {
     try {
       console.log('Recurring charges job starting', new Date().toISOString());
+
       if (!RecurringCharge || !Charge || !Student || !Teacher) {
         console.warn('Recurring charge job aborted: required models are not available.');
         return;
       }
+
       const today = new Date();
       const dayToday = today.getDate();
+
+      // query active recurrences (manager/admin scope handled when creating records)
       const recs = await RecurringCharge.find({ active: true }).lean().catch(()=>[]);
       const applied = [];
+
       for (const r of recs || []) {
+        // date window check
         if (r.startDate && new Date(r.startDate) > today) continue;
         if (r.endDate && new Date(r.endDate) < today) continue;
+
+        // map configured day to available days this month (month-end handling)
         const daysInMonth = new Date(today.getFullYear(), today.getMonth()+1, 0).getDate();
         const targetDay = Math.min(Number(r.dayOfMonth || 1), daysInMonth);
         if (targetDay !== dayToday) continue;
+
         try {
+          // apply charge: increment totalDue
           const inc = { $inc: { totalDue: Number(r.amount || 0) } };
           if (String(r.personType) === 'student') {
             await Student.findByIdAndUpdate(r.personId, inc).catch((e)=>{ console.warn('Student update failed', e && e.message); });
           } else {
             await Teacher.findByIdAndUpdate(r.personId, inc).catch((e)=>{ console.warn('Teacher update failed', e && e.message); });
           }
+
+          // insert audit charge
           const ch = new Charge({
             personType: r.personType,
             personId: r.personId,
@@ -367,6 +271,7 @@ if (!CRON_DISABLED) {
           console.error('Recurring apply failed for', r._id, err);
         }
       }
+
       console.log('Recurring charges job finished, applied:', applied.length);
     } catch (err) {
       console.error('Recurring charges job error', err);
@@ -383,389 +288,4 @@ server.listen(PORT, () => {
 });
 
 
-// backend/server.js
-// 'use strict';
-
-// const express = require('express');
-// const mongoose = require('mongoose');
-
-// const cors = require('cors');
-// const compression = require('compression');
-// const fs = require('fs');
-// const path = require('path');
-// const http = require('http');
-// require('dotenv').config();
-
-// // Optional AWS S3 integration
-// const AWS = require('aws-sdk'); // v2 SDK (simple and widely available)
-
-// // -----------------------------
-// // Route imports (unchanged)
-// // -----------------------------
-// const authRoutes = require('./routes/auth');
-// // ... (keep all your existing route imports)
-// const studentRoutes = require('./routes/students');
-// const teacherRoutes = require('./routes/teachers');
-// const classRoutes = require('./routes/classes');
-// const subjectRoutes = require('./routes/subjects');
-// const parentRoutes = require('./routes/parents');
-// const dashboardRoutes = require('./routes/dashboard');
-// const votesRouter = require('./routes/votes');
-// const exams = require('./routes/exam');
-// const quizzes = require('./routes/quizzes');
-// const notices = require('./routes/notices');
-// const about = require('./routes/about');
-// const users = require('./routes/users');
-// const reports = require('./routes/reports');
-// const attendancesRoute = require('./routes/attendances');
-// const profileRoutes = require('./routes/profile');
-// const paymentRoutes = require('./routes/payments');
-// const financeRoutes = require('./routes/finance');
-// const zoomRouter = require('./routes/zoom');
-// const examRoutes = require('./routes/exam');
-// const helpers = require('./routes/helpers');
-// const helpRoutess = require('./routes/help');
-// const resultsRouter = require('./routes/results');
-// const recurringRoutes = require('./routes/recurring');
-// const gamesRouter = require('./routes/games');
-// const recycleRouter = require('./routes/recycle');
-// const developerRoutes = require('./routes/developer');
-// const storiesRouter = require('./routes/stories');
-
-// let chatsRouter = null;
-// try { chatsRouter = require('./routes/chats'); } catch(e){ /* optional */ }
-
-// // Models used in cron (optional)
-// const cron = require('node-cron');
-// const RecurringCharge = require('./models/RecurringCharge');
-// const Charge = require('./models/Charge');
-// const Student = require('./models/Student');
-// const Teacher = require('./models/Teacher');
-
-// // -----------------------------
-// // App init + uploads folder
-// // -----------------------------
-// const app = express();
-// const uploadsDir = path.join(__dirname, 'uploads');
-// try { if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true }); } catch(e){ console.warn('mkdir uploads failed', e && e.message); }
-
-// // -----------------------------
-// // S3 configuration (optional)
-// // -----------------------------
-// const S3_BUCKET = process.env.AWS_S3_BUCKET || '';
-// const S3_REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || '';
-// const S3_PREFIX = (process.env.S3_UPLOADS_PREFIX || 'uploads').replace(/^\/+|\/+$/g,''); // key prefix
-// const DELETE_LOCAL_AFTER_S3 = (String(process.env.DELETE_LOCAL_AFTER_S3_UPLOAD || 'false').toLowerCase() === 'true');
-
-// let s3 = null;
-// const S3_ENABLED = !!S3_BUCKET && !!process.env.AWS_ACCESS_KEY_ID && !!process.env.AWS_SECRET_ACCESS_KEY;
-// if (S3_ENABLED) {
-//   AWS.config.update({
-//     region: S3_REGION || undefined,
-//     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-//     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-//   });
-//   s3 = new AWS.S3({ apiVersion: '2006-03-01' });
-//   console.log('S3 enabled. Bucket=', S3_BUCKET, 'prefix=', S3_PREFIX);
-// } else {
-//   console.log('S3 not enabled (AWS env vars missing). Using local uploads folder only.');
-// }
-
-// // helper to upload a local file to S3
-// async function uploadToS3(localPath, key) {
-//   if (!S3_ENABLED || !s3) throw new Error('S3 not configured');
-//   if (!fs.existsSync(localPath)) throw new Error('Local file not found: ' + localPath);
-//   const stream = fs.createReadStream(localPath);
-//   const params = {
-//     Bucket: S3_BUCKET,
-//     Key: key.replace(/^\/+/,''),
-//     Body: stream,
-//     ACL: 'public-read' // adjust as you prefer (public-read convenient)
-//   };
-//   return new Promise((resolve, reject) => {
-//     s3.upload(params, (err, data) => {
-//       if (err) return reject(err);
-//       // optionally delete local file after successful upload
-//       if (DELETE_LOCAL_AFTER_S3) {
-//         try { fs.unlinkSync(localPath); } catch(e){ /* ignore */ }
-//       }
-//       resolve(data); // data.Location is the public URL (if public-read)
-//     });
-//   });
-// }
-
-// // -----------------------------
-// // Allowed origins / CORS Setup (unchanged from your file)
-// // -----------------------------
-// const rawEnvOrigins = String(process.env.FRONTEND_ORIGINS || process.env.FRONTEND_ORIGIN || '').trim();
-// const envOrigins = rawEnvOrigins.length ? rawEnvOrigins.split(',').map(s => (s || '').trim()).filter(Boolean) : [];
-// const defaultDevOrigins = [
-//   'http://127.0.0.1:5501',
-//   'http://localhost:5501',
-//   'http://127.0.0.1:5000',
-//   'http://localhost:5000'
-// ];
-// const allowedOrigins = Array.from(new Set([ ...envOrigins, ...defaultDevOrigins ]));
-// const netlifyPreviewRegex = /\.netlify\.app$/i;
-// const ALLOW_ALL = process.env.DISABLE_CORS_CHECK === '1' || process.env.DISABLE_CORS_CHECK === 'true';
-
-// function originIsAllowed(origin) {
-//   if (!origin) return true;
-//   if (ALLOW_ALL) return true;
-//   if (allowedOrigins.indexOf(origin) !== -1) return true;
-//   if (netlifyPreviewRegex.test(origin)) return true;
-//   return false;
-// }
-
-// app.use((req, res, next) => {
-//   const origin = req.headers.origin;
-//   if (origin && originIsAllowed(origin)) {
-//     res.setHeader('Access-Control-Allow-Origin', origin);
-//     res.setHeader('Vary', 'Origin');
-//     res.setHeader('Access-Control-Allow-Credentials', 'true');
-//     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-//     res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept');
-//   }
-//   if (req.method === 'OPTIONS') {
-//     return res.status(origin && originIsAllowed(origin) ? 204 : 403).end();
-//   }
-//   next();
-// });
-
-// const corsOptions = {
-//   origin: (origin, cb) => {
-//     if (!origin) return cb(null, true);
-//     if (originIsAllowed(origin)) return cb(null, true);
-//     return cb(new Error('CORS origin denied: ' + origin), false);
-//   },
-//   credentials: true,
-//   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-//   allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept']
-// };
-
-// app.use(cors(corsOptions));
-// app.options('*', cors(corsOptions));
-
-// const DEBUG_ALLOW_ALL = process.env.DEBUG_ALLOW_ALL_CORS === '1';
-// if (DEBUG_ALLOW_ALL) {
-//   console.warn('DEBUG_ALLOW_ALL_CORS enabled — allowing all origins (temporary)');
-//   app.use(cors({ origin: true, credentials: true }));
-//   app.options('*', cors({ origin: true, credentials: true }));
-// } else {
-//   app.use(cors(corsOptions));
-//   app.options('*', cors(corsOptions));
-// }
-
-// // -----------------------------
-// // Express middleware
-// // -----------------------------
-// app.use(express.json({ limit: '10mb' }));
-// app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-// app.use(compression());
-
-// // -----------------------------
-// // Static uploads handler (local first; fallback to S3 stream when configured)
-// // -----------------------------
-// if (S3_ENABLED) {
-//   // Serve local files when present. If not found locally, stream from S3.
-//   app.get('/uploads/*', async (req, res) => {
-//     try {
-//       const rel = req.path.replace(/^\/uploads\/?/, '').replace(/^\/+/, '');
-//       const localFile = path.join(uploadsDir, rel);
-//       if (fs.existsSync(localFile)) {
-//         return res.sendFile(localFile);
-//       }
-//       // Not on local disk -> try S3
-//       const s3Key = (S3_PREFIX ? (S3_PREFIX + '/') : '') + rel;
-//       const params = { Bucket: S3_BUCKET, Key: s3Key };
-//       // Head first to check existence
-//       s3.headObject(params, (headErr, metadata) => {
-//         if (headErr) {
-//           // not found
-//           res.status(404).end();
-//           return;
-//         }
-//         // Stream the object
-//         const stream = s3.getObject(params).createReadStream();
-//         // set some headers (content-type, length) if available
-//         if (metadata && metadata.ContentType) res.setHeader('Content-Type', metadata.ContentType);
-//         if (metadata && metadata.ContentLength) res.setHeader('Content-Length', metadata.ContentLength);
-//         stream.on('error', () => res.status(404).end());
-//         stream.pipe(res);
-//       });
-//     } catch (err) {
-//       console.error('Error in uploads handler', err);
-//       res.status(500).json({ ok:false, error: 'Server error' });
-//     }
-//   });
-// } else {
-//   // simple static serve from local uploads dir (existing behavior)
-//   app.use('/uploads', express.static(uploadsDir));
-// }
-
-// // maintain your existing specific static mapping (exams)
-// app.use('/uploads/exams', express.static(path.join(process.cwd(), 'uploads', 'exams')));
-
-// // -----------------------------
-// // create HTTP server & socket.io
-// // -----------------------------
-// const server = http.createServer(app);
-// const { Server } = require('socket.io');
-
-// const io = new Server(server, {
-//   cors: {
-//     origin: (origin, cb) => {
-//       if (!origin) return cb(null, true);
-//       if (ALLOW_ALL) return cb(null, true);
-//       if (allowedOrigins.indexOf(origin) !== -1) return cb(null, true);
-//       if (netlifyPreviewRegex.test(origin)) return cb(null, true);
-//       console.warn('Socket.IO CORS denied for origin:', origin);
-//       return cb('origin not allowed', false);
-//     },
-//     methods: ['GET','POST'],
-//     credentials: true
-//   },
-//   pingInterval: 25000,
-//   pingTimeout: 60000
-// });
-
-// app.set('io', io);
-
-// // -----------------------------
-// // mount routes (after CORS middleware is active)
-// // -----------------------------
-// app.use('/api/auth', authRoutes);
-// app.use('/api/students', studentRoutes);
-// app.use('/api/teachers', teacherRoutes);
-// app.use('/api/classes', classRoutes);
-// app.use('/api/subjects', subjectRoutes);
-// app.use('/api/parents', parentRoutes);
-// app.use('/api/dashboard', dashboardRoutes);
-// app.use('/api/votes', votesRouter);
-// app.use('/api/exams', exams);
-// app.use('/api/quizzes', quizzes);
-// app.use('/api/notices', notices);
-// app.use('/api/about', about);
-// app.use('/api/users', users);
-// app.use('/api/reports', reports);
-// app.use('/api/attendances', attendancesRoute);
-// app.use('/api/profile', profileRoutes);
-// app.use('/api/payments', paymentRoutes);
-// app.use('/api/finance', financeRoutes);
-// app.use('/api/zoom', zoomRouter);
-// app.use('/api/help', helpRoutess);
-// app.use('/api/exams', examRoutes);
-// app.use('/api', helpers);
-// app.use('/api/results', resultsRouter);
-// if (chatsRouter) app.use('/api/chats', chatsRouter);
-// app.use('/api/recurring', recurringRoutes);
-// app.use('/api/recycle', recycleRouter);
-// app.use('/api/math-game', gamesRouter);
-// app.use('/api/developers', developerRoutes);
-// app.use('/api/stories', storiesRouter);
-
-// // root
-// app.get('/', (req, res) => res.json({ ok:true, message:'School Manager API' }));
-
-// // global error handler (unchanged)
-// app.use((err, req, res, next) => {
-//   console.error('Unhandled error:', err && (err.stack || err));
-//   if (!res.headersSent) {
-//     if (err && String(err.message || '').toLowerCase().includes('cors')) {
-//       return res.status(403).json({ ok:false, error: 'CORS error: ' + err.message });
-//     }
-//     return res.status(500).json({ ok:false, error: err && err.message ? err.message : 'Server error' });
-//   }
-//   next(err);
-// });
-
-// // -----------------------------
-// // connect mongodb & start cron etc (unchanged)
-// // -----------------------------
-// const PORT = Number(process.env.PORT || 5000);
-// const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/schooldb';
-
-// mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-//   .then(()=> console.log('MongoDB connected'))
-//   .catch(err => console.error('MongoDB connect error', err));
-
-// // --- Socket auth & events (unchanged from your file) ---
-// io.use(async (socket, next) => {
-//   try {
-//     const token = socket.handshake && socket.handshake.auth && socket.handshake.auth.token;
-//     if (!token) return next(new Error('Authentication error: token missing'));
-//     const jwt = require('jsonwebtoken');
-//     const secret = process.env.JWT_SECRET || 'secret';
-//     const payload = await new Promise((resolve, reject) => {
-//       jwt.verify(token, secret, (err, decoded) => {
-//         if (err) return reject(err);
-//         resolve(decoded);
-//       });
-//     });
-//     socket.user = payload || {};
-//     return next();
-//   } catch (err) {
-//     console.warn('Socket auth failed', err && err.message ? err.message : err);
-//     return next(new Error('Authentication error'));
-//   }
-// });
-
-// io.on('connection', (socket) => {
-//   const user = socket.user || {};
-//   console.log('Socket connected:', socket.id, 'user=', user && (user._id || user.id || user.uid));
-
-//   socket.on('joinClass', (classId) => {
-//     try {
-//       if (!classId) return;
-//       socket.join(`class_${classId}`);
-//       socket.to(`class_${classId}`).emit('chat:userJoined', { userId: user._id || user.id || user.uid, fullname: user.fullname || user.name });
-//     } catch (e) { console.warn('joinClass error', e); }
-//   });
-
-//   socket.on('leaveClass', (classId) => {
-//     try {
-//       if (!classId) return;
-//       socket.leave(`class_${classId}`);
-//       socket.to(`class_${classId}`).emit('chat:userLeft', { userId: user._id || user.id || user.uid, fullname: user.fullname || user.name });
-//     } catch (e) { console.warn('leaveClass error', e); }
-//   });
-
-//   socket.on('typing', ({ classId, typing }) => {
-//     try {
-//       if (!classId) return;
-//       socket.to(`class_${classId}`).emit('chat:typing', { userId: user._id || user.id || user.uid, fullname: user.fullname || user.name, typing: !!typing });
-//     } catch (e) { console.warn('typing error', e); }
-//   });
-
-//   socket.on('disconnect', (reason) => {
-//     console.log('Socket disconnected', socket.id, reason);
-//   });
-// });
-
-// // Optional zoom socket, cron, etc. (keep your existing logic)
-// try {
-//   const initZoomSocket = require('./socket-zoom');
-//   if (typeof initZoomSocket === 'function') {
-//     try { initZoomSocket(io); } catch (e) { console.warn('initZoomSocket error', e && e.message ? e.message : e); }
-//   }
-// } catch (e) { console.warn('socket-zoom module not present or failed to load'); }
-
-// const CRON_DISABLED = process.env.DISABLE_RECURRING_CRON === '1' || process.env.DISABLE_RECURRING_CRON === 'true';
-// if (!CRON_DISABLED) {
-//   cron.schedule('10 0 * * *', async () => {
-//     // your existing cron code (unchanged)...
-//     console.log('Recurring charges job starting', new Date().toISOString());
-//     // ... omitted for brevity
-//   });
-// } else {
-//   console.log('Recurring cron disabled by DISABLE_RECURRING_CRON');
-// }
-
-// // Start server
-// server.listen(PORT, () => {
-//   console.log('Server running on port', PORT);
-//   console.log('Socket.IO ready');
-// });
-
-// // export upload helper for routes to call
-// module.exports = { app, server, uploadToS3, S3_ENABLED, S3_BUCKET, S3_PREFIX };
+// --- Socket auth middleware (token-based) ---
