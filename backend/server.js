@@ -1,3 +1,4 @@
+// backend/server.js
 'use strict';
 
 const express = require('express');
@@ -7,9 +8,13 @@ const compression = require('compression');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const cron = require('node-cron');
 require('dotenv').config();
 
-// your route imports (keep your other routes as before)
+// -----------------------------
+// Route imports (keep your existing route files)
+// -----------------------------
+const authRoutes = require('./routes/auth');
 const studentRoutes = require('./routes/students');
 const teacherRoutes = require('./routes/teachers');
 const classRoutes = require('./routes/classes');
@@ -28,7 +33,6 @@ const profileRoutes = require('./routes/profile');
 const paymentRoutes = require('./routes/payments');
 const financeRoutes = require('./routes/finance');
 const zoomRouter = require('./routes/zoom');
-const examRoutes = require('./routes/exam');
 const helpers = require('./routes/helpers');
 const helpRoutess = require('./routes/help');
 const resultsRouter = require('./routes/results');
@@ -37,18 +41,37 @@ const gamesRouter = require('./routes/games');
 const recycleRouter = require('./routes/recycle');
 const developerRoutes = require('./routes/developer');
 const storiesRouter = require('./routes/stories');
+
 let chatsRouter = null;
-try { chatsRouter = require('./routes/chats'); } catch(e){ /* optional */ }
+try { chatsRouter = require('./routes/chats'); } catch (e) { /* optional */ }
 
+// Models used in cron (optional; guard if not present)
+let RecurringCharge, Charge, Student, Teacher;
+try {
+  RecurringCharge = require('./models/RecurringCharge');
+  Charge = require('./models/Charge');
+  Student = require('./models/Student');
+  Teacher = require('./models/Teacher');
+} catch (e) {
+  console.warn('Cron models not found; recurring job will skip when models are missing.');
+}
+
+// -----------------------------
+// App init + local uploads folder (NO S3 — local only)
+// -----------------------------
 const app = express();
-
-// ensure uploads dir
 const uploadsDir = path.join(__dirname, 'uploads');
-try { if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true }); } catch(e){ console.warn('mkdir uploads failed', e && e.message); }
+try {
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+} catch (e) {
+  console.warn('Failed to create uploads dir:', e && e.message);
+}
 
-// CORS setup - allow PATCH in preflight and common headers
-const envOrigins = (process.env.FRONTEND_ORIGINS || process.env.FRONTEND_ORIGIN || '')
-  .split(',').map(s => s && s.trim()).filter(Boolean);
+// -----------------------------
+// CORS / Allowed origins
+// -----------------------------
+const rawEnvOrigins = String(process.env.FRONTEND_ORIGINS || process.env.FRONTEND_ORIGIN || '').trim();
+const envOrigins = rawEnvOrigins.length ? rawEnvOrigins.split(',').map(s => (s || '').trim()).filter(Boolean) : [];
 const defaultDevOrigins = [
   'http://127.0.0.1:5501',
   'http://localhost:5501',
@@ -56,29 +79,70 @@ const defaultDevOrigins = [
   'http://localhost:5000'
 ];
 const allowedOrigins = Array.from(new Set([ ...envOrigins, ...defaultDevOrigins ]));
+const netlifyPreviewRegex = /\.netlify\.app$/i;
+const ALLOW_ALL = process.env.DISABLE_CORS_CHECK === '1' || process.env.DISABLE_CORS_CHECK === 'true';
+const DEBUG_ALLOW_ALL = process.env.DEBUG_ALLOW_ALL_CORS === '1';
+
+function originIsAllowed(origin) {
+  if (!origin) return true;
+  if (ALLOW_ALL) return true;
+  if (allowedOrigins.indexOf(origin) !== -1) return true;
+  if (netlifyPreviewRegex.test(origin)) return true;
+  return false;
+}
+
+// Short middleware that sets CORS headers and handles OPTIONS preflight
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && originIsAllowed(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept');
+  }
+  if (req.method === 'OPTIONS') {
+    return res.status(origin && originIsAllowed(origin) ? 204 : 403).end();
+  }
+  next();
+});
 
 const corsOptions = {
-  origin: function(origin, cb) {
+  origin: (origin, cb) => {
     if (!origin) return cb(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1) return cb(null, true);
-    return cb(new Error('CORS origin denied: ' + origin));
+    if (originIsAllowed(origin)) return cb(null, true);
+    return cb(new Error('CORS origin denied: ' + origin), false);
   },
   credentials: true,
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept']
 };
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // respond to preflight
 
+if (DEBUG_ALLOW_ALL) {
+  console.warn('DEBUG_ALLOW_ALL_CORS enabled — allowing all origins (temporary)');
+  app.use(cors({ origin: true, credentials: true }));
+  app.options('*', cors({ origin: true, credentials: true }));
+} else {
+  app.use(cors(corsOptions));
+  app.options('*', cors(corsOptions));
+}
+
+// -----------------------------
+// Express middleware
+// -----------------------------
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(compression());
 
-// static uploads
+// -----------------------------
+// Static uploads (local only)
+// -----------------------------
 app.use('/uploads', express.static(uploadsDir));
 app.use('/uploads/exams', express.static(path.join(process.cwd(), 'uploads', 'exams')));
 
+// -----------------------------
 // mount routes
+// -----------------------------
 app.use('/api/auth', authRoutes);
 app.use('/api/students', studentRoutes);
 app.use('/api/teachers', teacherRoutes);
@@ -99,7 +163,6 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/zoom', zoomRouter);
 app.use('/api/help', helpRoutess);
-app.use('/api/exams', examRoutes);
 app.use('/api', helpers);
 app.use('/api/results', resultsRouter);
 if (chatsRouter) app.use('/api/chats', chatsRouter);
@@ -112,7 +175,9 @@ app.use('/api/stories', storiesRouter);
 // root
 app.get('/', (req, res) => res.json({ ok:true, message:'School Manager API' }));
 
+// -----------------------------
 // global error handler
+// -----------------------------
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err && (err.stack || err));
   if (!res.headersSent) {
@@ -124,32 +189,45 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
+// -----------------------------
 // connect mongodb
+// -----------------------------
 const PORT = Number(process.env.PORT || 5000);
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/schooldb';
 mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(()=> console.log('MongoDB connected'))
   .catch(err => console.error('MongoDB connect error', err));
 
-// create server + socket.io (unchanged)
+// -----------------------------
+// create HTTP server & socket.io (token-based socket auth included)
+// -----------------------------
 const server = http.createServer(app);
 const { Server } = require('socket.io');
+
 const io = new Server(server, {
-  cors: { origin: allowedOrigins, methods: ['GET','POST'], credentials: true },
-  pingInterval: 25000, pingTimeout: 60000
+  cors: {
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (ALLOW_ALL) return cb(null, true);
+      if (allowedOrigins.indexOf(origin) !== -1) return cb(null, true);
+      if (netlifyPreviewRegex.test(origin)) return cb(null, true);
+      console.warn('Socket.IO CORS denied for origin:', origin);
+      return cb('origin not allowed', false);
+    },
+    methods: ['GET','POST'],
+    credentials: true
+  },
+  pingInterval: 25000,
+  pingTimeout: 60000
 });
+
 app.set('io', io);
 
-// socket auth and events (same as your existing code)
-// ... (keep your socket auth/event code here - unchanged from your file)
-// This expects a JWT token sent by the socket client as: io({ auth: { token } })
+// socket auth middleware: expects io({ auth: { token } })
 io.use(async (socket, next) => {
   try {
-    // token may be inside handshake.auth.token
     const token = socket.handshake && socket.handshake.auth && socket.handshake.auth.token;
     if (!token) return next(new Error('Authentication error: token missing'));
-
-    // verify token (adjust to your auth strategy if not JWT)
     const jwt = require('jsonwebtoken');
     const secret = process.env.JWT_SECRET || 'secret';
     const payload = await new Promise((resolve, reject) => {
@@ -158,8 +236,6 @@ io.use(async (socket, next) => {
         resolve(decoded);
       });
     });
-
-    // attach user payload to socket
     socket.user = payload || {};
     return next();
   } catch (err) {
@@ -168,17 +244,14 @@ io.use(async (socket, next) => {
   }
 });
 
-// --- Socket events (chat join/leave/typing etc) ---
 io.on('connection', (socket) => {
   const user = socket.user || {};
   console.log('Socket connected:', socket.id, 'user=', user && (user._id || user.id || user.uid));
 
-  // join a class room
   socket.on('joinClass', (classId) => {
     try {
       if (!classId) return;
       socket.join(`class_${classId}`);
-      // optionally emit presence / joined event to room
       socket.to(`class_${classId}`).emit('chat:userJoined', { userId: user._id || user.id || user.uid, fullname: user.fullname || user.name });
     } catch (e) { console.warn('joinClass error', e); }
   });
@@ -199,27 +272,24 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', (reason) => {
-    // handle disconnect if needed
     console.log('Socket disconnected', socket.id, reason);
   });
 });
 
-// --- optional: Wire Zoom sockets if you have socket-zoom.js (safe guard) ---
+// Optional zoom socket wiring (safe guard)
 try {
   const initZoomSocket = require('./socket-zoom');
   if (typeof initZoomSocket === 'function') {
     try { initZoomSocket(io); } catch (e) { console.warn('initZoomSocket error', e && e.message ? e.message : e); }
   }
-} catch (e) {
-  // not critical
- console.warn('socket-zoom module not present or failed to load');
-}
+} catch (e) { console.warn('socket-zoom module not present or failed to load'); }
 
-// Optional: disable automatic cron in certain environments
+// -----------------------------
+// Recurring cron job (guarded — will skip if models missing)
+// -----------------------------
 const CRON_DISABLED = process.env.DISABLE_RECURRING_CRON === '1' || process.env.DISABLE_RECURRING_CRON === 'true';
 
 if (!CRON_DISABLED) {
-  // DAILY RECURRING CHARGES JOB - runs once per day at 00:10 server time
   cron.schedule('10 0 * * *', async () => {
     try {
       console.log('Recurring charges job starting', new Date().toISOString());
@@ -231,23 +301,18 @@ if (!CRON_DISABLED) {
 
       const today = new Date();
       const dayToday = today.getDate();
-
-      // query active recurrences (manager/admin scope handled when creating records)
       const recs = await RecurringCharge.find({ active: true }).lean().catch(()=>[]);
       const applied = [];
 
       for (const r of recs || []) {
-        // date window check
         if (r.startDate && new Date(r.startDate) > today) continue;
         if (r.endDate && new Date(r.endDate) < today) continue;
 
-        // map configured day to available days this month (month-end handling)
         const daysInMonth = new Date(today.getFullYear(), today.getMonth()+1, 0).getDate();
         const targetDay = Math.min(Number(r.dayOfMonth || 1), daysInMonth);
         if (targetDay !== dayToday) continue;
 
         try {
-          // apply charge: increment totalDue
           const inc = { $inc: { totalDue: Number(r.amount || 0) } };
           if (String(r.personType) === 'student') {
             await Student.findByIdAndUpdate(r.personId, inc).catch((e)=>{ console.warn('Student update failed', e && e.message); });
@@ -255,7 +320,6 @@ if (!CRON_DISABLED) {
             await Teacher.findByIdAndUpdate(r.personId, inc).catch((e)=>{ console.warn('Teacher update failed', e && e.message); });
           }
 
-          // insert audit charge
           const ch = new Charge({
             personType: r.personType,
             personId: r.personId,
@@ -287,5 +351,5 @@ server.listen(PORT, () => {
   console.log('Socket.IO ready');
 });
 
-
-// --- Socket auth middleware (token-based) ---
+// Export app, server, and uploadsDir for route code to use
+module.exports = { app, server, uploadsDir };
