@@ -86,6 +86,61 @@ router.post('/', auth, roles(['admin','manager']), upload.single('photo'), async
 });
 
 // List teachers (owner-only). Teachers see only themselves.
+// router.get('/', auth, roles(['admin','manager','teacher']), async (req,res) => {
+//   try {
+//     if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
+
+//     const { search = '', page = 1, limit = 50 } = req.query;
+//     const p = Math.max(1, parseInt(page || 1, 10));
+//     const l = Math.max(1, Math.min(500, parseInt(limit || 50, 10)));
+//     const q = { deleted: { $ne: true } }; // exclude soft deleted
+//     if (search) q.$or = [{ fullname: new RegExp(search, 'i') }, { numberId: new RegExp(search, 'i') }];
+
+//     if (req.user.role === 'teacher') {
+//       q._id = req.user._id;
+//     } else {
+//       q.createdBy = req.user._id;
+//     }
+
+//     const items = await Teacher.find(q)
+//       .limit(l)
+//       .skip((p - 1) * l)
+//       .sort({ createdAt: -1 })
+//       .populate('classIds', 'name classId')
+//       .populate('subjectIds', 'name subjectId')
+//       .lean();
+
+//     // compute paid amounts defensively (if Payment model exists)
+//     let sums = [];
+//     try {
+//       if (Payment && items.length > 0 && typeof Payment.aggregate === 'function') {
+//         const ids = items.map(i => new mongoose.Types.ObjectId(String(i._id)));
+//         sums = await Payment.aggregate([
+//           { $match: { personType: 'teacher', personId: { $in: ids } } },
+//           { $group: { _id: '$personId', paid: { $sum: '$amount' } } }
+//         ]);
+//       }
+//     } catch (eAgg) {
+//       console.error('Payment aggregation error (GET /teachers):', eAgg && eAgg.stack ? eAgg.stack : eAgg);
+//       sums = [];
+//     }
+
+//     const paidMap = new Map((sums || []).map(s => [String(s._id), s.paid]));
+//     items.forEach(it => {
+//       if (it.photo) it.photoUrl = `/uploads/${it.photo}`;
+//       it.paidAmount = Number(paidMap.get(String(it._id)) || 0);
+//       it.totalDue = Number(it.totalDue || it.salary || 0);
+//     });
+
+//     const total = await Teacher.countDocuments(q);
+//     res.json({ items, total });
+//   } catch (err) {
+//     console.error('GET /teachers error:', err && err.stack ? err.stack : err);
+//     res.status(500).json({ message: 'Server error' });
+//   }
+// });
+
+// List teachers (owner-only). Teachers see only themselves.
 router.get('/', auth, roles(['admin','manager','teacher']), async (req,res) => {
   try {
     if (req.user && (req.user.disabled || req.user.suspended)) return res.status(403).json({ message: 'Your account is not allowed to perform this action' });
@@ -96,11 +151,15 @@ router.get('/', auth, roles(['admin','manager','teacher']), async (req,res) => {
     const q = { deleted: { $ne: true } }; // exclude soft deleted
     if (search) q.$or = [{ fullname: new RegExp(search, 'i') }, { numberId: new RegExp(search, 'i') }];
 
+    // Visibility rules:
+    // - teacher role: only their own record
+    // - manager role: only teachers they created
+    // - admin role: see all (no additional filter)
     if (req.user.role === 'teacher') {
       q._id = req.user._id;
-    } else {
+    } else if (req.user.role === 'manager') {
       q.createdBy = req.user._id;
-    }
+    } // admin: no extra filter
 
     const items = await Teacher.find(q)
       .limit(l)
@@ -139,6 +198,9 @@ router.get('/', auth, roles(['admin','manager','teacher']), async (req,res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+ 
+
+
 
 // GET single teacher details (with paid amount)
 router.get('/:id', auth, roles(['admin','manager','teacher']), async (req, res) => {
@@ -191,9 +253,12 @@ router.put('/:id', auth, roles(['admin','manager']), upload.single('photo'), asy
     const doc = await Teacher.findById(id);
     if (!doc || doc.deleted) return res.status(404).json({ message: 'Teacher not found' });
 
-    // owner check
-    if (String(doc.createdBy) !== String(req.user._id)) return res.status(403).json({ message: 'Forbidden' });
-
+ 
+// Ownership rules: admin may edit any teacher; manager may edit only those they created
+if (req.user.role === 'manager' && String(doc.createdBy) !== String(req.user._id)) {
+  return res.status(403).json({ message: 'Forbidden' });
+}
+// admins are allowed to update any teacher record
     const update = { ...(req.body || {}) };
     if (update.password) {
       update.passwordHash = await bcrypt.hash(update.password, 10);
