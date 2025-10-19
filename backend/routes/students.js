@@ -1031,7 +1031,7 @@ const roles = require('../middleware/roles');
 const Student = require('../models/Student');
 
 const crypto = require('crypto');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcrypt'); // require once
 
 let Payment;
 try { Payment = require('../models/Payment'); } catch (e) { Payment = null; console.warn('Payment model not available:', e.message); }
@@ -1043,25 +1043,21 @@ const fs = require('fs');
 const UPLOADS_ROOT = path.join(__dirname, '..', 'uploads');
 const STUDENTS_DIR = path.join(UPLOADS_ROOT, 'students');
 
-// ensure directories
+// ensure uploads/students exists
 try { if (!fs.existsSync(STUDENTS_DIR)) fs.mkdirSync(STUDENTS_DIR, { recursive: true }); } catch (e) { console.warn('mkdir students uploads failed', e && e.message); }
 
+// multer storage writes into uploads/students
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, STUDENTS_DIR),
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || '').toLowerCase() || '.jpg';
-    const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, `${unique}${ext}`);
+    const ext = path.extname(file.originalname || '') || '.jpg';
+    cb(null, `photo-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
   }
 });
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
-  fileFilter: (req, file, cb) => {
-    const ok = /image\/(png|jpe?g|webp|gif)/i.test(file.mimetype);
-    cb(null, ok);
-  }
-});
+const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 }, fileFilter: (req,file,cb) => {
+  const ok = /image\/(png|jpe?g|webp|gif)/i.test(file.mimetype);
+  cb(null, ok);
+}});
 
 const toNum = v => (typeof v === 'number' ? v : (Number(v) || 0));
 
@@ -1074,6 +1070,7 @@ function computeStatus(fee, paid) {
   return 'unpaid';
 }
 
+// helper to generate default numberId STD<DD><MM><seq>
 async function generateStudentNumberId(schoolId) {
   const now = new Date();
   const dd = String(now.getDate()).padStart(2, '0');
@@ -1086,19 +1083,17 @@ async function generateStudentNumberId(schoolId) {
   return `${prefix}${seq + 1}`;
 }
 
+// Delete a local file if exists. Accepts either relative path like "students/xxx.jpg" or absolute path.
 async function deleteLocalFileIfExists(relOrFullPath) {
   try {
-    // accept either 'students/abc.jpg' or full path
+    if (!relOrFullPath) return;
     let full = relOrFullPath;
-    if (!full) return;
     if (!path.isAbsolute(full)) full = path.join(UPLOADS_ROOT, String(relOrFullPath).replace(/^\/+/, ''));
     if (fs.existsSync(full)) {
       fs.unlinkSync(full);
       console.log('Deleted file', full);
     }
-  } catch (e) {
-    console.warn('deleteLocalFileIfExists failed', e && e.message);
-  }
+  } catch (e) { console.warn('deleteLocalFileIfExists failed', e && e.message); }
 }
 
 /* -----------------------
@@ -1112,9 +1107,8 @@ router.post('/', auth, roles(['admin','manager']), (req, res) => {
       return res.status(400).json({ message: 'File upload error', detail: err.message });
     }
     try {
-      const { fullname, numberId, classId, parentName, parentPhone, phone, password, fee } = req.body;
+      const { fullname, numberId, classId, parentName, parentPhone, phone, password, fee, birthdate } = req.body;
       if (!fullname) {
-        // cleanup uploaded file if any
         if (req.file && req.file.path) await deleteLocalFileIfExists(req.file.path);
         return res.status(400).json({ message: 'fullname required' });
       }
@@ -1124,7 +1118,7 @@ router.post('/', auth, roles(['admin','manager']), (req, res) => {
         finalNumberId = await generateStudentNumberId(req.user.schoolId);
       } else {
         const qExist = { numberId: finalNumberId, schoolId: req.user.schoolId, deleted: { $ne: true } };
-        const exists = await Student.findOne(qExist).lean();
+        const exists = await Student.findOne(qExist);
         if (exists) {
           if (req.file && req.file.path) await deleteLocalFileIfExists(req.file.path);
           return res.status(400).json({ message: 'numberId exists for your school' });
@@ -1150,6 +1144,7 @@ router.post('/', auth, roles(['admin','manager']), (req, res) => {
         paidAmount,
         status,
         photo: photoFile,
+        birthdate: birthdate ? new Date(birthdate) : undefined,
         schoolId: req.user.schoolId,
         createdBy: req.user._id,
         deleted: false
@@ -1162,7 +1157,6 @@ router.post('/', auth, roles(['admin','manager']), (req, res) => {
       res.json(ret);
     } catch (e) {
       console.error('POST /students error:', e && e.stack ? e.stack : e);
-      // cleanup uploaded file if any
       if (req.file && req.file.path) await deleteLocalFileIfExists(req.file.path);
       if (e && e.code === 11000) return res.status(400).json({ message: 'Duplicate', detail: e.keyValue });
       res.status(500).json({ message: 'Server error', err: e && e.message ? e.message : String(e) });
@@ -1178,7 +1172,7 @@ router.get('/', auth, roles(['admin','manager','teacher','student','parent']), a
     const { search = '', page = 1, limit = 50 } = req.query;
     const p = Math.max(1, parseInt(page || 1, 10));
     const l = Math.max(1, Math.min(500, parseInt(limit || 50, 10)));
-    const q = { deleted: { $ne: true } };
+    const q = { deleted: { $ne: true } }; // exclude soft-deleted by default
     if (search) q.$or = [{ fullname: new RegExp(search, 'i') }, { numberId: new RegExp(search, 'i') }, { parentName: new RegExp(search, 'i') }];
 
     if (req.user.role === 'student') {
@@ -1208,6 +1202,7 @@ router.get('/', auth, roles(['admin','manager','teacher','student','parent']), a
       .populate({ path: 'classId', select: 'name classId' })
       .lean();
 
+    // attach payment sums if Payment model exists
     let sums = [];
     try {
       if (Payment && items.length > 0 && typeof Payment.aggregate === 'function') {
@@ -1228,6 +1223,7 @@ router.get('/', auth, roles(['admin','manager','teacher','student','parent']), a
       it.paidAmount = toNum(it.paidAmount || paidMap.get(String(it._id)));
       it.totalDue = toNum(it.totalDue || it.fee || 0);
       it.status = computeStatus(it.fee || 0, it.paidAmount || 0);
+      // birthdate preserved if present (Date -> ISO string on JSON)
     });
 
     const total = await Student.countDocuments(q);
@@ -1334,6 +1330,7 @@ router.get('/:id', auth, roles(['admin','manager','teacher','student','parent'])
     student.totalDue = toNum(student.totalDue || student.fee || 0);
     if (student.photo) student.photoUrl = `/uploads/${student.photo}`;
     student.status = computeStatus(student.fee || 0, student.paidAmount || 0);
+
     return res.json({ student });
   } catch (err) {
     console.error('GET /students/:id error:', err && err.stack ? err.stack : err);
@@ -1342,7 +1339,7 @@ router.get('/:id', auth, roles(['admin','manager','teacher','student','parent'])
 });
 
 /* -----------------------
-   Update student
+   Update student (admin/manager)
    ----------------------- */
 router.put('/:id', auth, roles(['admin','manager']), (req, res) => {
   upload.single('photo')(req, res, async function (err) {
@@ -1364,18 +1361,24 @@ router.put('/:id', auth, roles(['admin','manager']), (req, res) => {
         return res.status(404).json({ message: 'Student not found' });
       }
 
-      // Admin can update any, manager only their created students
-      if (req.user.role === 'manager' && String(doc.createdBy) !== String(req.user._id)) {
-        if (req.file && req.file.path) await deleteLocalFileIfExists(req.file.path);
-        return res.status(403).json({ message: 'Forbidden' });
+      // Allow admins to edit any; managers may edit students created in their school OR the creator
+      if (req.user.role !== 'admin') {
+        const sameCreator = String(doc.createdBy) === String(req.user._id);
+        const sameSchool = req.user.schoolId && String(req.user.schoolId) === String(doc.schoolId);
+        if (!sameCreator && !sameSchool) {
+          if (req.file && req.file.path) await deleteLocalFileIfExists(req.file.path);
+          return res.status(403).json({ message: 'Forbidden' });
+        }
       }
 
       const update = { ...(req.body || {}) };
 
-      if (req.file) {
-        // set new photo path relative to uploads root
-        update.photo = `students/${req.file.filename}`;
+      // handle incoming birthdate value (string -> Date or remove)
+      if (update.birthdate !== undefined) {
+        update.birthdate = update.birthdate ? new Date(update.birthdate) : null;
       }
+
+      if (req.file) update.photo = `students/${req.file.filename}`;
 
       if (typeof update.fee !== 'undefined') update.fee = toNum(update.fee);
       if (typeof update.paidAmount !== 'undefined') update.paidAmount = toNum(update.paidAmount);
@@ -1385,18 +1388,16 @@ router.put('/:id', auth, roles(['admin','manager']), (req, res) => {
         delete update.password;
       }
 
-      // recompute status if needed
+      // recompute status if fee/paidAmount changed
       if (typeof update.fee !== 'undefined' || typeof update.paidAmount !== 'undefined') {
         const fee = typeof update.fee !== 'undefined' ? update.fee : doc.fee;
         const paid = typeof update.paidAmount !== 'undefined' ? update.paidAmount : (doc.paidAmount || 0);
         update.status = computeStatus(fee, paid);
       }
 
-      // If new photo uploaded -> delete old local file (best-effort)
-      const oldPhoto = doc.photo || '';
-      if (update.photo && oldPhoto) {
-        // oldPhoto might be 'students/xxx.jpg' -> delete local file
-        try { await deleteLocalFileIfExists(oldPhoto); } catch (e) { console.warn('Failed to delete old photo', e && e.message); }
+      // If replacing photo, delete old file (best-effort) AFTER setting new file (so DB update succeeds)
+      if (req.file && doc.photo && typeof doc.photo === 'string' && doc.photo.startsWith('students/')) {
+        try { await deleteLocalFileIfExists(doc.photo); } catch(e){ console.warn('delete old photo failed', e && e.message); }
       }
 
       const s = await Student.findByIdAndUpdate(id, update, { new: true }).lean();
@@ -1470,7 +1471,7 @@ router.post('/:id/change-password', auth, roles(['admin','manager','teacher','st
     }
 
     if (['admin','manager'].includes(req.user.role)) {
-      if (req.user.role === 'manager' && String(student.createdBy) !== String(req.user._id)) {
+      if (req.user.role === 'manager' && String(student.createdBy) !== String(req.user._id) && !(req.user.schoolId && String(student.schoolId) === String(req.user.schoolId))) {
         return res.status(403).json({ message: 'Forbidden' });
       }
       student.passwordHash = await bcrypt.hash(newPassword, 10);
@@ -1488,7 +1489,7 @@ router.post('/:id/change-password', auth, roles(['admin','manager','teacher','st
 });
 
 /* -----------------------
-   Delete student (soft or permanent)
+   Delete student (owner-only)
    ----------------------- */
 router.delete('/:id', auth, roles(['admin','manager']), async (req, res) => {
   try {
@@ -1498,16 +1499,16 @@ router.delete('/:id', auth, roles(['admin','manager']), async (req, res) => {
     const doc = await Student.findById(id);
     if (!doc) return res.json({ ok: true });
 
-    if (String(doc.createdBy) !== String(req.user._id)) return res.status(403).json({ message: 'Forbidden' });
+    if (String(doc.createdBy) !== String(req.user._id) && req.user.role !== 'admin' && !(req.user.role === 'manager' && req.user.schoolId && String(req.user.schoolId) === String(doc.schoolId))) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
 
     const wantPermanent = (req.query.permanent === 'true') || (req.body && req.body.permanent === true);
     if (wantPermanent) {
       if (req.user.role !== 'admin') return res.status(403).json({ message: 'Only admin can permanently delete' });
 
-      // delete student doc
-      await Student.findByIdAndDelete(id).catch(()=>{});
+      await Student.findByIdAndDelete(id);
 
-      // cleanup payments best-effort
       if (Payment) {
         try {
           const pid = mongoose.Types.ObjectId.isValid(String(id)) ? mongoose.Types.ObjectId(String(id)) : null;
@@ -1521,7 +1522,7 @@ router.delete('/:id', auth, roles(['admin','manager']), async (req, res) => {
         }
       }
 
-      // remove photo file if local
+      // delete local photo if present
       try { if (doc.photo && doc.photo.startsWith('students/')) await deleteLocalFileIfExists(doc.photo); } catch(e){}
 
       return res.json({ ok: true, deleted: 'permanent' });
