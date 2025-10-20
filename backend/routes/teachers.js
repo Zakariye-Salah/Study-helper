@@ -667,10 +667,8 @@ const fs = require('fs');
 const UPLOADS_ROOT = path.join(__dirname, '..', 'uploads');
 const TEACHERS_DIR = path.join(UPLOADS_ROOT, 'teachers');
 
-// ensure directory
 try { if (!fs.existsSync(TEACHERS_DIR)) fs.mkdirSync(TEACHERS_DIR, { recursive: true }); } catch (e) { console.warn('mkdir teachers uploads failed', e && e.message); }
 
-// multer storage (teachers folder)
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, TEACHERS_DIR),
   filename: (req, file, cb) => {
@@ -681,7 +679,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req,file,cb) => {
     const ok = /image\/(png|jpe?g|webp|gif)/i.test(file.mimetype);
     cb(null, ok);
@@ -700,7 +698,6 @@ async function deleteLocalFileIfExists(relOrFullPath) {
   } catch (e) { console.warn('deleteLocalFileIfExists failed', e && e.message); }
 }
 
-// helper to generate teacher numberId per day
 async function generateTeacherNumberId(schoolId) {
   const now = new Date();
   const dd = String(now.getDate()).padStart(2,'0');
@@ -742,7 +739,7 @@ router.post('/', auth, roles(['admin','manager']), (req, res) => {
       }
 
       const passwordHash = password ? await bcrypt.hash(password, 10) : undefined;
-      const photoFile = req.file ? `teachers/${req.file.filename}` : undefined;
+      const photoFile = req.file ? `teachers/${path.basename(req.file.path)}` : undefined;
 
       const t = new Teacher({
         fullname,
@@ -761,12 +758,7 @@ router.post('/', auth, roles(['admin','manager']), (req, res) => {
       await t.save();
 
       const ret = await Teacher.findById(t._id).populate('classIds','name classId').populate('subjectIds','name subjectId').lean();
-      try {
-        const host = req.protocol + '://' + req.get('host');
-        if (ret.photo) ret.photoUrl = `${host}/uploads/${ret.photo}`;
-      } catch (e) {
-        if (ret.photo) ret.photoUrl = `/uploads/${ret.photo}`;
-      }
+      if (ret.photo) ret.photoUrl = `${req.protocol}://${req.get('host')}/uploads/${ret.photo}`;
       res.json(ret);
     } catch (err) {
       console.error('POST /teachers error:', err && (err.stack || err));
@@ -777,7 +769,7 @@ router.post('/', auth, roles(['admin','manager']), (req, res) => {
   });
 });
 
-// List teachers (owner-only). Teachers see only themselves.
+// List teachers (unchanged except photoUrl)
 router.get('/', auth, roles(['admin','manager','teacher']), async (req,res) => {
   try {
     const { search = '', page = 1, limit = 50 } = req.query;
@@ -815,17 +807,8 @@ router.get('/', auth, roles(['admin','manager','teacher']), async (req,res) => {
     }
 
     const paidMap = new Map((sums || []).map(s => [String(s._id), s.paid]));
-    let host = '';
-    try { host = req.protocol + '://' + req.get('host'); } catch(e){ host = ''; }
     items.forEach(it => {
-      if (it.photo) {
-        try {
-          if (host) it.photoUrl = `${host}/uploads/${it.photo}`;
-          else it.photoUrl = `/uploads/${it.photo}`;
-        } catch (e) {
-          it.photoUrl = `/uploads/${it.photo}`;
-        }
-      }
+      if (it.photo) it.photoUrl = `${req.protocol}://${req.get('host')}/uploads/${it.photo}`;
       it.paidAmount = Number(paidMap.get(String(it._id)) || 0);
       it.totalDue = Number(it.totalDue || it.salary || 0);
     });
@@ -838,7 +821,7 @@ router.get('/', auth, roles(['admin','manager','teacher']), async (req,res) => {
   }
 });
 
-// GET single teacher details (with paid amount)
+// GET single teacher details
 router.get('/:id', auth, roles(['admin','manager','teacher']), async (req, res) => {
   try {
     const id = req.params.id;
@@ -869,12 +852,7 @@ router.get('/:id', auth, roles(['admin','manager','teacher']), async (req, res) 
 
     teacher.paidAmount = Number(paid);
     teacher.totalDue = Number(teacher.totalDue || teacher.salary || 0);
-    try {
-      const host = req.protocol + '://' + req.get('host');
-      if (teacher.photo) teacher.photoUrl = `${host}/uploads/${teacher.photo}`;
-    } catch (e) {
-      if (teacher.photo) teacher.photoUrl = `/uploads/${teacher.photo}`;
-    }
+    if (teacher.photo) teacher.photoUrl = `${req.protocol}://${req.get('host')}/uploads/${teacher.photo}`;
     return res.json({ teacher });
   } catch (err) {
     console.error('GET /teachers/:id error:', err && (err.stack || err));
@@ -916,27 +894,22 @@ router.put('/:id', auth, roles(['admin','manager']), (req, res) => {
       if (update.classIds && !Array.isArray(update.classIds)) update.classIds = [update.classIds];
       if (update.subjectIds && !Array.isArray(update.subjectIds)) update.subjectIds = [update.subjectIds];
 
+      let newPhotoRelative = null;
       if (req.file) {
-        // store relative path like 'teachers/<filename>'
-        update.photo = `teachers/${req.file.filename}`;
+        newPhotoRelative = `teachers/${path.basename(req.file.path)}`;
+        update.photo = newPhotoRelative;
       }
 
       if (typeof update.salary !== 'undefined') update.salary = Number(update.salary);
 
-      // delete old local photo if replaced
-      if (update.photo && doc.photo && typeof doc.photo === 'string' && doc.photo.startsWith('teachers/')) {
-        await deleteLocalFileIfExists(doc.photo);
+      const t = await Teacher.findByIdAndUpdate(id, update, { new: true }).populate('classIds','name classId').populate('subjectIds','name subjectId').lean();
+
+      // delete old local photo if replaced (after DB update)
+      if (newPhotoRelative && doc.photo && typeof doc.photo === 'string' && doc.photo.startsWith('teachers/')) {
+        try { await deleteLocalFileIfExists(doc.photo); } catch(e){ console.warn('delete old photo failed', e && e.message); }
       }
 
-      const t = await Teacher.findByIdAndUpdate(id, update, { new: true }).populate('classIds','name classId').populate('subjectIds','name subjectId').lean();
-      if (t && t.photo) {
-        try {
-          const host = req.protocol + '://' + req.get('host');
-          t.photoUrl = `${host}/uploads/${t.photo}`;
-        } catch (e) {
-          t.photoUrl = `/uploads/${t.photo}`;
-        }
-      }
+      if (t.photo) t.photoUrl = `${req.protocol}://${req.get('host')}/uploads/${t.photo}`;
       res.json(t);
     } catch (err) {
       console.error('PUT /teachers/:id error:', err && (err.stack || err));
@@ -989,5 +962,6 @@ router.delete('/:id', auth, roles(['admin','manager']), async (req,res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 
 module.exports = router;
