@@ -649,8 +649,6 @@
 // });
 
 // module.exports = router;
-
-// backend/routes/teachers.js
 'use strict';
 
 const express = require('express');
@@ -763,7 +761,12 @@ router.post('/', auth, roles(['admin','manager']), (req, res) => {
       await t.save();
 
       const ret = await Teacher.findById(t._id).populate('classIds','name classId').populate('subjectIds','name subjectId').lean();
-      if (ret.photo) ret.photoUrl = `/uploads/${ret.photo}`;
+      try {
+        const host = req.protocol + '://' + req.get('host');
+        if (ret.photo) ret.photoUrl = `${host}/uploads/${ret.photo}`;
+      } catch (e) {
+        if (ret.photo) ret.photoUrl = `/uploads/${ret.photo}`;
+      }
       res.json(ret);
     } catch (err) {
       console.error('POST /teachers error:', err && (err.stack || err));
@@ -812,8 +815,17 @@ router.get('/', auth, roles(['admin','manager','teacher']), async (req,res) => {
     }
 
     const paidMap = new Map((sums || []).map(s => [String(s._id), s.paid]));
+    let host = '';
+    try { host = req.protocol + '://' + req.get('host'); } catch(e){ host = ''; }
     items.forEach(it => {
-      if (it.photo) it.photoUrl = `/uploads/${it.photo}`;
+      if (it.photo) {
+        try {
+          if (host) it.photoUrl = `${host}/uploads/${it.photo}`;
+          else it.photoUrl = `/uploads/${it.photo}`;
+        } catch (e) {
+          it.photoUrl = `/uploads/${it.photo}`;
+        }
+      }
       it.paidAmount = Number(paidMap.get(String(it._id)) || 0);
       it.totalDue = Number(it.totalDue || it.salary || 0);
     });
@@ -857,7 +869,12 @@ router.get('/:id', auth, roles(['admin','manager','teacher']), async (req, res) 
 
     teacher.paidAmount = Number(paid);
     teacher.totalDue = Number(teacher.totalDue || teacher.salary || 0);
-    if (teacher.photo) teacher.photoUrl = `/uploads/${teacher.photo}`;
+    try {
+      const host = req.protocol + '://' + req.get('host');
+      if (teacher.photo) teacher.photoUrl = `${host}/uploads/${teacher.photo}`;
+    } catch (e) {
+      if (teacher.photo) teacher.photoUrl = `/uploads/${teacher.photo}`;
+    }
     return res.json({ teacher });
   } catch (err) {
     console.error('GET /teachers/:id error:', err && (err.stack || err));
@@ -912,7 +929,14 @@ router.put('/:id', auth, roles(['admin','manager']), (req, res) => {
       }
 
       const t = await Teacher.findByIdAndUpdate(id, update, { new: true }).populate('classIds','name classId').populate('subjectIds','name subjectId').lean();
-      if (t.photo) t.photoUrl = `/uploads/${t.photo}`;
+      if (t && t.photo) {
+        try {
+          const host = req.protocol + '://' + req.get('host');
+          t.photoUrl = `${host}/uploads/${t.photo}`;
+        } catch (e) {
+          t.photoUrl = `/uploads/${t.photo}`;
+        }
+      }
       res.json(t);
     } catch (err) {
       console.error('PUT /teachers/:id error:', err && (err.stack || err));
