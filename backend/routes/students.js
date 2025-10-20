@@ -1019,8 +1019,6 @@
 // });
 
 // module.exports = router;
-
-// backend/routes/students.js
 'use strict';
 
 const express = require('express');
@@ -1153,7 +1151,12 @@ router.post('/', auth, roles(['admin','manager']), (req, res) => {
       await s.save();
 
       const ret = s.toObject();
-      if (ret.photo) ret.photoUrl = `/uploads/${ret.photo}`;
+      try {
+        const host = req.protocol + '://' + req.get('host');
+        if (ret.photo) ret.photoUrl = `${host}/uploads/${ret.photo}`;
+      } catch (e) {
+        if (ret.photo) ret.photoUrl = `/uploads/${ret.photo}`;
+      }
       res.json(ret);
     } catch (e) {
       console.error('POST /students error:', e && e.stack ? e.stack : e);
@@ -1218,8 +1221,19 @@ router.get('/', auth, roles(['admin','manager','teacher','student','parent']), a
     }
 
     const paidMap = new Map((sums || []).map(s => [String(s._id), s.paid]));
+    // build host once
+    let host = '';
+    try { host = req.protocol + '://' + req.get('host'); } catch(e){ host = ''; }
+
     items.forEach(it => {
-      if (it.photo) it.photoUrl = `/uploads/${it.photo}`;
+      if (it.photo) {
+        try {
+          if (host) it.photoUrl = `${host}/uploads/${it.photo}`;
+          else it.photoUrl = `/uploads/${it.photo}`;
+        } catch (e) {
+          it.photoUrl = `/uploads/${it.photo}`;
+        }
+      }
       it.paidAmount = toNum(it.paidAmount || paidMap.get(String(it._id)));
       it.totalDue = toNum(it.totalDue || it.fee || 0);
       it.status = computeStatus(it.fee || 0, it.paidAmount || 0);
@@ -1267,8 +1281,18 @@ router.get('/class/:classId', auth, roles(['admin','manager','teacher']), async 
     }
 
     const paidMap = new Map((sums || []).map(s => [String(s._id), s.paid]));
+    let host = '';
+    try { host = req.protocol + '://' + req.get('host'); } catch(e){ host = ''; }
+
     items.forEach(it => {
-      if (it.photo) it.photoUrl = `/uploads/${it.photo}`;
+      if (it.photo) {
+        try {
+          if (host) it.photoUrl = `${host}/uploads/${it.photo}`;
+          else it.photoUrl = `/uploads/${it.photo}`;
+        } catch (e) {
+          it.photoUrl = `/uploads/${it.photo}`;
+        }
+      }
       it.paidAmount = toNum(it.paidAmount || paidMap.get(String(it._id)));
       it.totalDue = toNum(it.totalDue || it.fee || 0);
       it.status = computeStatus(it.fee || 0, it.paidAmount || 0);
@@ -1328,7 +1352,12 @@ router.get('/:id', auth, roles(['admin','manager','teacher','student','parent'])
 
     student.paidAmount = toNum(paid);
     student.totalDue = toNum(student.totalDue || student.fee || 0);
-    if (student.photo) student.photoUrl = `/uploads/${student.photo}`;
+    try {
+      const host = req.protocol + '://' + req.get('host');
+      if (student.photo) student.photoUrl = `${host}/uploads/${student.photo}`;
+    } catch (e) {
+      if (student.photo) student.photoUrl = `/uploads/${student.photo}`;
+    }
     student.status = computeStatus(student.fee || 0, student.paidAmount || 0);
 
     return res.json({ student });
@@ -1401,7 +1430,14 @@ router.put('/:id', auth, roles(['admin','manager']), (req, res) => {
       }
 
       const s = await Student.findByIdAndUpdate(id, update, { new: true }).lean();
-      if (s && s.photo) s.photoUrl = `/uploads/${s.photo}`;
+      if (s && s.photo) {
+        try {
+          const host = req.protocol + '://' + req.get('host');
+          s.photoUrl = `${host}/uploads/${s.photo}`;
+        } catch (e) {
+          s.photoUrl = `/uploads/${s.photo}`;
+        }
+      }
       res.json(s);
     } catch (e) {
       console.error('PUT /students/:id error:', e && e.stack ? e.stack : e);
