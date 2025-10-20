@@ -366,7 +366,7 @@
 
 // module.exports = router;
 
-
+// backend/routes/stories.js
 'use strict';
 
 const express = require('express');
@@ -382,6 +382,7 @@ const { randomUUID } = require('crypto');
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads', 'stories');
 try { if(!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true }); } catch(e){ console.warn('mkdir uploads failed', e && e.message); }
 
+// multer setup
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
   filename: (req, file, cb) => cb(null, `${Date.now()}-${Math.round(Math.random()*1e6)}${path.extname(file.originalname).toLowerCase()}`)
@@ -391,6 +392,7 @@ const upload = multer({ storage, limits: { fileSize: 8 * 1024 * 1024 }, fileFilt
   cb(null, ok);
 }});
 
+// simple auth middleware (re-use style from your other routes)
 function requireAuth(req,res,next){
   const auth = req.headers.authorization;
   if(!auth) return res.status(401).json({ ok:false, error:'Unauthorized' });
@@ -412,7 +414,11 @@ function requireAdmin(req,res,next){
   next();
 }
 
-// Folders API unchanged
+/**
+ * Folders API
+ */
+
+// GET /api/stories/folders?q=&visible=true
 router.get('/folders', async (req,res) => {
   try {
     const q = (req.query.q || '').trim();
@@ -421,6 +427,7 @@ router.get('/folders', async (req,res) => {
     if(visibleOnly) filter.visible = true;
     if(q) filter.name = new RegExp(q.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&'), 'i');
     const items = await Folder.find(filter).sort({ order: 1, name: 1 }).lean();
+    // ensure count is accurate
     const enriched = await Promise.all(items.map(async f => {
       const cnt = await Story.countDocuments({ folderId: f._id, visible: true });
       return { ...f, count: cnt };
@@ -429,11 +436,48 @@ router.get('/folders', async (req,res) => {
   } catch (err) { console.error(err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
-// folder create/update/delete unchanged...
+// POST create folder (admin)
+router.post('/folders', requireAuth, requireAdmin, async (req,res) => {
+  try {
+    const name = (req.body.name || '').trim();
+    if(!name) return res.status(400).json({ ok:false, error:'name required' });
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+    const f = new Folder({ name, slug });
+    await f.save();
+    res.json({ ok:true, folder: f });
+  } catch (err) { console.error(err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
+});
 
-// Stories list & CRUD (keeps your behavior)
+// PUT update folder (admin)
+router.put('/folders/:id', requireAuth, requireAdmin, async (req,res) => {
+  try {
+    const update = {};
+    if(req.body.name !== undefined) update.name = req.body.name;
+    if(req.body.visible !== undefined) update.visible = !!req.body.visible;
+    const f = await Folder.findByIdAndUpdate(req.params.id, update, { new: true });
+    if(!f) return res.status(404).json({ ok:false, error:'Not found' });
+    res.json({ ok:true, folder: f });
+  } catch (err) { console.error(err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
+});
+
+// DELETE folder (admin) — disassociate stories (set folderId=null)
+router.delete('/folders/:id', requireAuth, requireAdmin, async (req,res) => {
+  try {
+    const f = await Folder.findByIdAndDelete(req.params.id);
+    if(!f) return res.status(404).json({ ok:false, error:'Not found' });
+    await Story.updateMany({ folderId: f._id }, { $set: { folderId: null, folderName: '' } });
+    res.json({ ok:true, deletedId: req.params.id });
+  } catch (err) { console.error(err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
+});
+
+/**
+ * Stories list & CRUD
+ */
+
+// GET /api/stories?folderId=&q=&visible=&sort=&page=&limit=
 router.get('/', async (req,res) => {
   try {
+    // quick ping (client might use this)
     if(req.query._ping) return res.json({ ok:true, items: [] });
 
     const folderId = req.query.folderId || null;
@@ -441,7 +485,7 @@ router.get('/', async (req,res) => {
     const visibleOnly = req.query.visible === 'true';
     const page = Math.max(1, parseInt(req.query.page || '1', 10));
     const limit = Math.min(200, parseInt(req.query.limit || '40', 10));
-    const sort = req.query.sort || 'latest';
+    const sort = req.query.sort || 'latest'; // 'latest' or 'reacts'
     const skip = (page - 1) * limit;
 
     const filter = {};
@@ -456,21 +500,21 @@ router.get('/', async (req,res) => {
       ];
     }
 
+    // fetch with basic projection
     let itemsQuery = Story.find(filter).lean();
     if(sort === 'reacts') {
+      // will fetch and then sort by computed reactions length
       itemsQuery = itemsQuery.skip(skip).limit(limit).sort({ createdAt: -1 });
       const items = await itemsQuery.exec();
+      // compute reaction counts and sort client-side
       items.forEach(it => { it._reactionCount = (it.reactions || []).length || 0; });
       items.sort((a,b) => b._reactionCount - a._reactionCount || new Date(b.createdAt) - new Date(a.createdAt));
       const total = await Story.countDocuments(filter);
-      // attach imageUrl if present
-      items.forEach(it => { if (it.image) it.imageUrl = `${req.protocol}://${req.get('host')}/uploads/stories/${path.basename(it.image)}`; });
       res.json({ ok:true, items, total, page });
       return;
     } else {
       const items = await itemsQuery.sort({ createdAt: -1, order: 1 }).skip(skip).limit(limit).exec();
       const total = await Story.countDocuments(filter);
-      items.forEach(it => { if (it.image) it.imageUrl = `${req.protocol}://${req.get('host')}/uploads/stories/${path.basename(it.image)}`; });
       res.json({ ok:true, items, total, page });
       return;
     }
@@ -482,7 +526,6 @@ router.get('/:id', async (req,res) => {
   try {
     const s = await Story.findById(req.params.id).lean();
     if(!s) return res.status(404).json({ ok:false, error:'Not found' });
-    if (s.image) s.imageUrl = `${req.protocol}://${req.get('host')}/uploads/stories/${path.basename(s.image)}`;
     res.json({ ok:true, story: s });
   } catch (err) { console.error(err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
@@ -504,6 +547,7 @@ router.post('/', requireAuth, requireAdmin, async (req,res) => {
       visible: typeof body.visible === 'boolean' ? body.visible : true,
       createdBy: req.user && (req.user.uid || req.user.id || req.user._id) || null
     });
+    // set denormalized folder name if given
     if(s.folderId){
       try {
         const folder = await Folder.findById(s.folderId);
@@ -511,6 +555,7 @@ router.post('/', requireAuth, requireAdmin, async (req,res) => {
       } catch(e){}
     }
     await s.save();
+    // increment folder count
     if(s.folderId) await Folder.findByIdAndUpdate(s.folderId, { $inc: { count: 1 } }).catch(()=>{});
     res.json({ ok:true, story: s });
   } catch (err) { console.error('POST story', err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
@@ -537,7 +582,6 @@ router.put('/:id', requireAuth, requireAdmin, async (req,res) => {
     if(body.visible !== undefined) update.visible = !!body.visible;
     const s = await Story.findByIdAndUpdate(req.params.id, update, { new: true });
     if(!s) return res.status(404).json({ ok:false, error:'Not found' });
-    if (s.image) s.imageUrl = `${req.protocol}://${req.get('host')}/uploads/stories/${path.basename(s.image)}`;
     res.json({ ok:true, story: s });
   } catch (err) { console.error(err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
@@ -547,39 +591,86 @@ router.delete('/:id', requireAuth, requireAdmin, async (req,res) => {
   try {
     const s = await Story.findByIdAndDelete(req.params.id);
     if(!s) return res.status(404).json({ ok:false, error:'Not found' });
+    // decrement folder count
     if(s.folderId) await Folder.findByIdAndUpdate(s.folderId, { $inc: { count: -1 } }).catch(()=>{});
-    try { if(s.image){ const file = path.join(UPLOADS_DIR, path.basename(s.image)); if(fs.existsSync(file)) fs.unlinkSync(file); } } catch(e){}
+    // remove image file if exists
+    try {
+      if (s.image) {
+        const file = path.join(UPLOADS_DIR, path.basename(s.image));
+        if (fs.existsSync(file)) {
+          fs.unlinkSync(file);
+        }
+      }
+    } catch(e){
+      console.warn('Failed to remove story image on delete', e && e.message);
+    }
     res.json({ ok:true, deletedId: req.params.id });
   } catch (err) { console.error(err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
 /**
  * Image upload for story
- * - keep existing path (/api/stories/:id/image)
+ *
+ * NOTE: This handler was rewritten to be more robust:
+ *  - it updates the DB with the new path and only deletes the old image AFTER DB save success
+ *  - if DB save fails it removes the newly uploaded file to avoid orphaned files
+ *  - it avoids trying to delete the same file name (safety check)
  */
 router.post('/:id/image', requireAuth, requireAdmin, upload.single('image'), async (req,res) => {
   try {
     if(!req.file) return res.status(400).json({ ok:false, error:'No file' });
+
     const s = await Story.findById(req.params.id);
-    if(!s) { fs.unlink(req.file.path, ()=>{}); return res.status(404).json({ ok:false, error:'Not found' }); }
-    // delete old file
-    if(s.image){
-      try { const old = path.join(UPLOADS_DIR, path.basename(s.image)); if(fs.existsSync(old)) fs.unlinkSync(old); } catch(e){}
+    if(!s) {
+      // story not found -> remove the uploaded file to avoid orphan
+      try { if (req.file && req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch(e){ /* ignore */ }
+      return res.status(404).json({ ok:false, error:'Not found' });
     }
-    // store relative path (no leading slash) for consistency
-    const rel = `stories/${path.basename(req.file.path)}`;
-    s.image = rel;
-    await s.save();
-    // return absolute URL for frontend convenience
-    const imageUrl = `${req.protocol}://${req.get('host')}/uploads/stories/${path.basename(req.file.path)}`;
-    res.json({ ok:true, story: s, imageUrl });
-  } catch (err) { console.error(err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
+
+    // build relative path that matches server static route (/uploads/...)
+    const newRel = `/uploads/stories/${path.basename(req.file.path)}`;
+
+    // Keep reference to old image so we can delete it after successful DB save
+    const oldImageRel = s.image || null;
+
+    // Assign new path and save
+    s.image = newRel;
+    try {
+      await s.save();
+    } catch (saveErr) {
+      // DB save failed -> remove newly uploaded file and return error
+      try { if (req.file && req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch(e){ /* ignore */ }
+      console.error('Failed to save story with new image:', saveErr);
+      return res.status(500).json({ ok:false, error: saveErr && saveErr.message ? saveErr.message : 'Failed to update story with image' });
+    }
+
+    // Remove old image file only after DB successfully updated, and only if different from new
+    if (oldImageRel && oldImageRel !== newRel) {
+      try {
+        const oldPath = path.join(UPLOADS_DIR, path.basename(oldImageRel));
+        if (fs.existsSync(oldPath)) {
+          fs.unlinkSync(oldPath);
+        }
+      } catch (e) {
+        // don't fail the request if deletion of old file fails; just log
+        console.warn('Failed to remove old story image:', e && e.message ? e.message : e);
+      }
+    }
+
+    res.json({ ok:true, story: s });
+  } catch (err) {
+    console.error('POST story image error:', err && (err.stack || err));
+    // Ensure uploaded file removed in case of unexpected errors
+    try { if (req.file && req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch(e){ /* ignore */ }
+    res.status(500).json({ ok:false, error: err && err.message ? err.message : 'Server error' });
+  }
 });
 
-// reactions, comments unchanged...
-
-// Reactions endpoints (unchanged)
-
+/**
+ * Reactions: create/update user's reaction on story
+ * POST /api/stories/:id/reactions  { type: '👍' }  (requireAuth)
+ * This replaces previously existing reaction by same user.
+ */
 router.post('/:id/reactions', requireAuth, async (req,res) => {
   try {
     const type = String(req.body.type || '').trim();
@@ -690,4 +781,3 @@ router.delete('/:id/comments/:commentId', requireAuth, async (req,res) => {
 });
 
 module.exports = router;
-
