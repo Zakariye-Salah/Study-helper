@@ -137,7 +137,14 @@ app.use(compression());
 // -----------------------------
 // Static uploads (local only)
 // -----------------------------
-app.use('/uploads', express.static(uploadsDir));
+// debug logger for uploads — remove or lower verbosity later
+app.use('/uploads', (req, res, next) => {
+  console.log('[uploads] request:', req.method, req.originalUrl);
+  next();
+});
+
+// serve uploads — set maxAge if desired (ms or string)
+app.use('/uploads', express.static(uploadsDir, { maxAge: '1d' }));
 app.use('/uploads/exams', express.static(path.join(process.cwd(), 'uploads', 'exams')));
 
 // -----------------------------
