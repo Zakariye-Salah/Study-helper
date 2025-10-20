@@ -133,33 +133,89 @@ router.put('/:id', requireAuth, requireAdmin, async (req,res) => {
 });
 
 // DELETE /api/developers/:id (admin)
+// -- robust cleanup: attempt to remove files referenced by the deleted developer only when no other Developer references them
 router.delete('/:id', requireAuth, requireAdmin, async (req,res) => {
   try {
-    const dev = await Developer.findByIdAndDelete(req.params.id);
+    const dev = await Developer.findById(req.params.id);
     if(!dev) return res.status(404).json({ ok:false, error:'Not found' });
+
+    // collect image urls to potentially clean after deletion
+    const imageUrls = (dev.images || []).map(i => i.url).filter(Boolean);
+
+    // delete developer doc first
+    await Developer.findByIdAndDelete(req.params.id);
+
+    // For each image url, delete file only if no other developer references it
+    for (const imgUrl of imageUrls) {
+      try {
+        const stillUsed = await Developer.countDocuments({ 'images.url': imgUrl });
+        if (stillUsed === 0) {
+          const filePath = path.join(UPLOADS_DIR, path.basename(imgUrl));
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        }
+      } catch(e){
+        console.warn('Failed to cleanup developer image', imgUrl, e && e.message ? e.message : e);
+      }
+    }
+
     res.json({ ok:true, deletedId: req.params.id });
   } catch(err){ console.error('DELETE /api/developers/:id', err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
-// POST /api/developers/:id/images (upload image) (admin)
+/**
+ * POST /api/developers/:id/images (upload image) (admin)
+ *
+ * Robustness fixes:
+ *  - If developer not found the uploaded temp file is removed.
+ *  - If saving the Developer fails after upload, the newly uploaded file is removed to avoid orphaned files.
+ *  - The new image is only added to the DB after successful save.
+ */
 router.post('/:id/images', requireAuth, requireAdmin, upload.single('image'), async (req,res) => {
   try {
     if(!req.file) return res.status(400).json({ ok:false, error:'No file' });
+
     const dev = await Developer.findById(req.params.id);
     if(!dev){
-      fs.unlink(req.file.path, ()=>{});
+      // remove uploaded file to avoid orphaning
+      try { if (req.file && req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch(e){ /* ignore */ }
       return res.status(404).json({ ok:false, error:'Developer not found' });
     }
+
     const id = (typeof randomUUID === 'function') ? randomUUID() : `${Date.now()}-${Math.round(Math.random()*1e6)}`;
     const rel = `/uploads/developers/${path.basename(req.file.path)}`;
-    const img = { id, url: rel, alt: req.body.alt || '', flipAxis: req.body.flipAxis || 'rotateY', order: (dev.images.length || 0), flipIntervalSeconds: Number(req.body.flipIntervalSeconds || 5) };
+    const img = {
+      id,
+      url: rel,
+      alt: req.body.alt || '',
+      flipAxis: req.body.flipAxis || 'rotateY',
+      order: Number(req.body.order || (dev.images.length || 0)),
+      flipIntervalSeconds: Number(req.body.flipIntervalSeconds || 5)
+    };
+
     dev.images.push(img);
-    await dev.save();
+
+    try {
+      await dev.save();
+    } catch(saveErr) {
+      // save failed -> remove uploaded file
+      try { if (req.file && req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch(e){ /* ignore */ }
+      console.error('Failed to save developer after image upload:', saveErr);
+      return res.status(500).json({ ok:false, error: saveErr && saveErr.message ? saveErr.message : 'Failed to save developer image' });
+    }
+
+    // success
     res.json({ ok:true, image: img });
-  } catch(err){ console.error('POST /images', err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
+  } catch(err){
+    console.error('POST /images', err);
+    // cleanup uploaded file on unexpected error
+    try { if (req.file && req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch(e){ /* ignore */ }
+    res.status(500).json({ ok:false, error: err.message || 'Server error' });
+  }
 });
 
-// PUT /api/developers/:id/images/:imageId (update image meta) (admin)
+/**
+ * PUT /api/developers/:id/images/:imageId (update image meta) (admin)
+ */
 router.put('/:id/images/:imageId', requireAuth, requireAdmin, async (req,res) => {
   try {
     const dev = await Developer.findById(req.params.id);
@@ -175,22 +231,50 @@ router.put('/:id/images/:imageId', requireAuth, requireAdmin, async (req,res) =>
   } catch(err){ console.error('PUT image meta', err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
 
-// DELETE /api/developers/:id/images/:imageId (admin)
+/**
+ * DELETE /api/developers/:id/images/:imageId (admin)
+ *
+ * Robustness fixes:
+ *  - Remove image entry from DB and save first.
+ *  - Only remove the file from disk if no other Developer references the same URL.
+ *  - This prevents race conditions that could leave DB pointing to a missing file.
+ */
 router.delete('/:id/images/:imageId', requireAuth, requireAdmin, async (req,res) => {
   try {
     const dev = await Developer.findById(req.params.id);
     if(!dev) return res.status(404).json({ ok:false, error:'Developer not found' });
     const idx = dev.images.findIndex(i => i.id === req.params.imageId);
     if(idx === -1) return res.status(404).json({ ok:false, error:'Image not found' });
+
     const img = dev.images[idx];
-    try {
-      const filePath = path.join(UPLOADS_DIR, path.basename(img.url));
-      if(fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    } catch(e){}
+    const imgUrl = img.url;
+
+    // remove from array then save
     dev.images.splice(idx,1);
-    await dev.save();
+    try {
+      await dev.save();
+    } catch(saveErr) {
+      console.error('Failed to save developer after removing image entry', saveErr);
+      return res.status(500).json({ ok:false, error: saveErr && saveErr.message ? saveErr.message : 'Failed to remove image' });
+    }
+
+    // delete file only if no other Developer references it
+    try {
+      const stillUsed = await Developer.countDocuments({ 'images.url': imgUrl });
+      if (stillUsed === 0) {
+        const filePath = path.join(UPLOADS_DIR, path.basename(imgUrl));
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      }
+    } catch(e){
+      console.warn('Failed to cleanup file for deleted developer image', e && e.message ? e.message : e);
+      // don't fail the request for cleanup issues
+    }
+
     res.json({ ok:true, deletedId: req.params.imageId });
   } catch(err){ console.error('DELETE image', err); res.status(500).json({ ok:false, error: err.message || 'Server error' }); }
 });
+
 
 module.exports = router;
