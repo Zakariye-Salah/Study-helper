@@ -554,4 +554,86 @@ router.post('/:id/move', auth, async (req, res) => {
   }
 });
 
+// --- Timetable routes ---
+// GET /classes/:id/timetable
+router.get('/:id/timetable', auth, roles(['admin','manager','teacher','student']), async (req,res) => {
+  try {
+    const id = req.params.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+    const cls = await Class.findById(id).select('timetable schoolId createdBy deleted').lean();
+    if (!cls || cls.deleted) return res.status(404).json({ message: 'Not found' });
+
+    // visibility: student/teacher may read if same school, manager/admin must be owner or admin
+    if (['student','teacher'].includes(req.user.role)) {
+      if (String(cls.schoolId) !== String(req.user.schoolId)) return res.status(403).json({ message: 'Forbidden' });
+    } else {
+      if (String(cls.createdBy) !== String(req.user._id)) {
+        // allow admin but forbid manager if not owner
+        if (req.user.role !== 'admin') return res.status(403).json({ message: 'Forbidden' });
+      }
+    }
+
+    return res.json({ ok: true, timetable: cls.timetable || null });
+  } catch (err) {
+    console.error('GET /classes/:id/timetable error', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// PUT /classes/:id/timetable  (create/update)
+router.put('/:id/timetable', auth, roles(['admin','manager']), async (req,res) => {
+  try {
+    const id = req.params.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+
+    const cls = await Class.findById(id);
+    if (!cls || cls.deleted) return res.status(404).json({ message: 'Not found' });
+
+    // only owner manager/admin can change
+    if (String(cls.createdBy) !== String(req.user._id) && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    // validate incoming data minimally
+    const { name = '', days = [], periods = [] } = req.body || {};
+    const safeDays = Array.isArray(days) ? days.map(d => String(d).trim()).filter(Boolean) : [];
+    const safePeriods = Array.isArray(periods) ? periods : [];
+
+    cls.timetable = {
+      name: String(name || (cls.name || '')).trim(),
+      days: safeDays,
+      periods: safePeriods,
+      updatedAt: new Date()
+    };
+
+    await cls.save();
+    return res.json({ ok: true, timetable: cls.timetable });
+  } catch (err) {
+    console.error('PUT /classes/:id/timetable error', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// DELETE /classes/:id/timetable
+router.delete('/:id/timetable', auth, roles(['admin','manager']), async (req,res) => {
+  try {
+    const id = req.params.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+
+    const cls = await Class.findById(id);
+    if (!cls || cls.deleted) return res.status(404).json({ message: 'Not found' });
+
+    if (String(cls.createdBy) !== String(req.user._id) && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    cls.timetable = null;
+    await cls.save();
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('DELETE /classes/:id/timetable error', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
 module.exports = router;
