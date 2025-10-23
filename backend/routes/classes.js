@@ -388,6 +388,71 @@ router.get('/:id', auth, roles(['admin','manager','teacher','student']), async (
   }
 });
 
+
+// GET /classes/:id/subjects  - return populated subjects for a class
+router.get('/:id/subjects', auth, roles(['admin','manager','teacher','student']), async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+
+    const cls = await Class.findById(id).select('subjectIds schoolId deleted createdBy').populate('subjectIds','name subjectId').lean();
+    if (!cls || cls.deleted) return res.status(404).json({ message: 'Not found' });
+
+    // visibility: student/teacher may read if same school, manager/admin must be owner or admin (keep same policy as GET /:id)
+    if (['student','teacher'].includes(req.user.role)) {
+      if (String(cls.schoolId) !== String(req.user.schoolId)) return res.status(403).json({ message: 'Forbidden' });
+    } else {
+      if (String(cls.createdBy) !== String(req.user._id)) {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: 'Forbidden' });
+      }
+    }
+
+    const subjects = Array.isArray(cls.subjectIds) ? cls.subjectIds : [];
+    return res.json({ ok: true, subjects });
+  } catch (err) {
+    console.error('GET /classes/:id/subjects error', err && (err.stack || err));
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// GET /classes/:id/teachers - return teachers assigned to this class
+router.get('/:id/teachers', auth, roles(['admin','manager','teacher','student']), async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid id' });
+
+    const cls = await Class.findById(id).select('schoolId deleted createdBy').lean();
+    if (!cls || cls.deleted) return res.status(404).json({ message: 'Not found' });
+
+    // visibility checks
+    if (['student','teacher'].includes(req.user.role)) {
+      if (String(cls.schoolId) !== String(req.user.schoolId)) return res.status(403).json({ message: 'Forbidden' });
+    } else {
+      // manager/admin: allow if same school and manager is owner (or admin bypass)
+      if (req.user.role === 'manager') {
+        if (String(cls.schoolId) !== String(req.user.schoolId)) return res.status(403).json({ message: 'Forbidden' });
+        // manager may view teachers for their school; keep optional stricter check commented
+        // if (String(cls.createdBy) !== String(req.user._id)) return res.status(403).json({ message: 'Forbidden' });
+      }
+    }
+
+    // find teachers that have this class in their classIds and aren't deleted
+    const Teacher = require('../models/Teacher');
+    const q = { deleted: { $ne: true }, classIds: { $in: [ mongoose.Types.ObjectId(id) ] } };
+    // restrict to same school for non-admin safety
+    if (req.user.role !== 'admin') q.schoolId = cls.schoolId;
+
+    const teachers = await Teacher.find(q).select('fullname subjectIds classIds phone photo').populate('subjectIds','name subjectId').lean();
+    // add photoUrl if needed — consistent with /teachers route
+    teachers.forEach(t => { if (t.photo) t.photoUrl = `${req.protocol}://${req.get('host')}/uploads/${t.photo}`; });
+
+    return res.json({ ok: true, teachers });
+  } catch (err) {
+    console.error('GET /classes/:id/teachers error', err && (err.stack || err));
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // update (owner-only)
 router.put('/:id', auth, roles(['admin','manager']), async (req,res)=>{
   try{
