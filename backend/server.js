@@ -406,6 +406,9 @@ const recycleRouter = require('./routes/recycle');
 const developerRoutes = require('./routes/developer');
 const storiesRouter = require('./routes/stories');
 
+const coursesRouter = require('./routes/courses');
+const purchasesRouter = require('./routes/purchases');
+
 let chatsRouter = null;
 try { chatsRouter = require('./routes/chats'); } catch (e) { /* optional */ }
 
@@ -543,6 +546,8 @@ app.use('/api/recycle', recycleRouter);
 app.use('/api/math-game', gamesRouter);
 app.use('/api/developers', developerRoutes);
 app.use('/api/stories', storiesRouter);
+app.use('/api/courses', coursesRouter);
+app.use('/api/purchases', purchasesRouter);
 
 // root
 app.get('/', (req, res) => res.json({ ok:true, message:'School Manager API' }));
