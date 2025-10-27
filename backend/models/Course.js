@@ -1,4 +1,3 @@
-
 // backend/models/Course.js
 'use strict';
 const mongoose = require('mongoose');
@@ -9,19 +8,23 @@ const mediaSchema = new mongoose.Schema({
   title: { type: String, default: '' }
 }, { _id: false });
 
+const teacherSchema = new mongoose.Schema({
+  name: { type: String, default: '' },
+  photo: { type: String, default: '' },
+  title: { type: String, default: '' },
+  bio: { type: String, default: '' },
+  externalLinks: { type: [String], default: [] }
+}, { _id: false });
+
 const CourseSchema = new mongoose.Schema({
-  courseId: { type: String, unique: true, index: true }, // CRS00001
+  courseId: { type: String, unique: true, index: true, sparse: true }, // CRS00001 (optional)
   title: { type: String, required: true, index: true },
-  teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-  teacherSnapshot: { // denormalized teacher details for fast display
-    name: String,
-    photo: String,
-    bio: String
-  },
+  teacher: { type: teacherSchema, default: {} }, // teacher object (photo, bio, name)
+  teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Teacher', default: null },
   isFree: { type: Boolean, default: false },
   price: { type: Number, default: 0 },
   discount: { type: Number, default: 0 }, // percent
-  duration: { type: String, default: '' }, // human-friendly like "1 month"
+  duration: { type: String, default: '' },
   shortDescription: { type: String, default: '' },
   longDescription: { type: String, default: '' },
   thumbnailUrl: { type: String, default: '' },
@@ -36,6 +39,9 @@ const CourseSchema = new mongoose.Schema({
   deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { timestamps: true });
 
-// simple helper: when a purchase is verified, increment buyersCount externally (route handles this)
+CourseSchema.pre('save', function(next) {
+  this.updatedAt = new Date();
+  next();
+});
 
 module.exports = mongoose.models.Course || mongoose.model('Course', CourseSchema);
