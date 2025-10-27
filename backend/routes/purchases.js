@@ -5,11 +5,10 @@ const router = express.Router();
 const Purchase = require('../models/Purchase');
 const Course = require('../models/Course');
 const HelpMsg = require('../models/HelpMessageCourse');
+const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
-// same auth middleware used in courses.js (or extract to shared util)
-// quick reimplementation:
 async function requireAuth(req, res, next) {
   try {
     const auth = req.headers.authorization || '';
@@ -38,7 +37,7 @@ function requireRole(role) {
 
 /**
  * POST /api/purchases
- * create a purchase attempt or enrollment for free courses
+ * create purchase attempt (paid) or enrollment (free)
  */
 router.post('/', requireAuth, async (req, res) => {
   try {
@@ -49,7 +48,11 @@ router.post('/', requireAuth, async (req, res) => {
     const course = await Course.findById(courseId).lean().catch(()=>null) || await Course.findOne({ courseId: courseId }).lean().catch(()=>null);
     if (!course) return res.status(404).json({ ok:false, error:'Course not found' });
 
-    // if free, create a verified purchase record immediately
+    // if user already verified for this course, return existing
+    const existing = await Purchase.findOne({ userId: req.user._id, courseId: course._id, status: 'verified' }).lean().catch(()=>null);
+    if (existing) return res.json({ ok:true, purchase: existing, message: 'Already enrolled' });
+
+    // if free -> create verified purchase immediately
     if (course.isFree) {
       const p = new Purchase({
         userId: req.user._id,
@@ -63,13 +66,14 @@ router.post('/', requireAuth, async (req, res) => {
         verifiedBy: req.user._id
       });
       await p.save();
-      // emit socket notification if available
+      // increment buyersCount on course
+      await Course.findByIdAndUpdate(course._id, { $inc: { buyersCount: 1 } }).catch(()=>{});
       const io = req.app && req.app.get && req.app.get('io');
       if (io) io.to('user:' + String(req.user._id)).emit('purchase:verified', { purchaseId: p._id });
       return res.json({ ok:true, purchase: p });
     }
 
-    // Paid course flow
+    // Paid flow: create checking record
     const prov = body.provider || 'Other';
     const phone = body.enteredPhoneNumber || '';
     const amount = Number(body.amount || course.price || 0);
@@ -85,13 +89,15 @@ router.post('/', requireAuth, async (req, res) => {
     });
     await newP.save();
 
-    // notify admins (socket emit)
+    // notify admins via socket
     try {
       const io = req.app && req.app.get && req.app.get('io');
       if (io) {
         const checkingCount = await Purchase.countDocuments({ status: 'checking' }).catch(()=>0);
         io.emit('notification.checking_count_update', { count: checkingCount });
-        io.emit('purchase:created', { purchaseId: newP._id });
+        io.emit('purchase:created', { purchaseId: newP._id, courseId: course._id });
+        // optionally notify admins in role: admin room
+        io.to('role:admin').emit('purchase:created', { purchaseId: newP._id });
       }
     } catch (e) { console.warn('socket emit failed', e); }
 
@@ -104,8 +110,8 @@ router.post('/', requireAuth, async (req, res) => {
 
 /**
  * GET /api/purchases
- * - Admin: returns all (with optional status=checking)
- * - User: returns user's purchases
+ * Admin -> all (optionally filter by status)
+ * User -> own purchases
  */
 router.get('/', requireAuth, async (req, res) => {
   try {
@@ -138,25 +144,29 @@ router.post('/:id/verify', requireAuth, requireRole('admin'), async (req, res) =
     const purchase = await Purchase.findById(id).exec();
     if (!purchase) return res.status(404).json({ ok:false, error:'Not found' });
 
+    const io = req.app && req.app.get && req.app.get('io');
+
     if (action === 'prove') {
       purchase.status = 'verified';
       purchase.verifiedAt = new Date();
       purchase.verifiedBy = req.user._id;
       await purchase.save();
-      // notify user via socket and create a help message
-      const io = req.app && req.app.get && req.app.get('io');
+      // update course buyersCount
+      await Course.findByIdAndUpdate(purchase.courseId, { $inc: { buyersCount: 1 } }).catch(()=>{});
+      // send socket event & create help message to user
       if (io) io.to('user:' + String(purchase.userId)).emit('purchase:verified', { id: purchase._id });
-      // create an inbox message for user
       const msg = new HelpMsg({
         fromUserId: null,
         toAdmin: false,
         toUserId: purchase.userId,
+        subject: 'Payment verified',
         text: `Your payment for "${purchase.courseSnapshot && purchase.courseSnapshot.title}" (${purchase.courseSnapshot && purchase.courseSnapshot.courseId}) has been verified. You now have access.`,
-        read: false
+        read: false,
+        meta: { purchaseId: purchase._id, courseId: purchase.courseId }
       });
       await msg.save();
       if (io) io.to('user:' + String(purchase.userId)).emit('help:new', msg);
-      // emit checking count update
+      // emit checking count update to all
       if (io) {
         const checkingCount = await Purchase.countDocuments({ status: 'checking' }).catch(()=>0);
         io.emit('notification.checking_count_update', { count: checkingCount });
@@ -166,14 +176,14 @@ router.post('/:id/verify', requireAuth, requireRole('admin'), async (req, res) =
       purchase.status = 'unproven';
       purchase.adminNotes = req.body.adminNotes || '';
       await purchase.save();
-      const io = req.app && req.app.get && req.app.get('io');
-      // message to user
       const msg = new HelpMsg({
         fromUserId: null,
         toAdmin: false,
         toUserId: purchase.userId,
+        subject: 'Payment not verified',
         text: `We could not verify your payment for "${purchase.courseSnapshot && purchase.courseSnapshot.title}". Reason: ${purchase.adminNotes || 'Please re-check and resend proof.'}`,
-        read: false
+        read: false,
+        meta: { purchaseId: purchase._id, courseId: purchase.courseId }
       });
       await msg.save();
       if (io) io.to('user:' + String(purchase.userId)).emit('help:new', msg);
