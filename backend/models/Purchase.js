@@ -20,4 +20,7 @@ const purchaseSchema = new mongoose.Schema({
   verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 });
 
+purchaseSchema.index({ status: 1 });
+purchaseSchema.index({ userId: 1, courseId: 1 });
+
 module.exports = mongoose.models.Purchase || mongoose.model('Purchase', purchaseSchema);
