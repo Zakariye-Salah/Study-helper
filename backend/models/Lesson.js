@@ -12,14 +12,15 @@ const LessonSchema = new Schema({
   courseId: { type: Schema.Types.ObjectId, ref: 'Course', required: true, index: true },
   title: { type: String, required: true },
   duration: { type: String },
-  preview: { type: Boolean, default: false }, // preview visible to all
-  mediaUrl: { type: String }, // single primary media url
+  preview: { type: Boolean, default: false },
+  mediaUrl: { type: String },
   media: { type: [MediaSchema], default: [] },
-  exercises: { type: Array, default: [] }, // flexible structure for MCQ / text / image
+  exercises: { type: Array, default: [] },
   notes: { type: String },
-  createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: false },
-  updatedBy: { type: Schema.Types.ObjectId, ref: 'User', required: false },
+  createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   deleted: { type: Boolean, default: false }
 }, { timestamps: true });
 
-module.exports = mongoose.model('Lesson', LessonSchema);
+// Guard against OverwriteModelError (nodemon / re-require)
+module.exports = mongoose.models.Lesson || mongoose.model('Lesson', LessonSchema);
