@@ -1,75 +1,54 @@
 // backend/models/Course.js
-'use strict';
 const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-const mediaSchema = new mongoose.Schema({
-  type: { type: String, enum: ['video','image','pdf','other'], default: 'video' },
-  url: { type: String, default: '' },
-  title: { type: String, default: '' }
-}, { _id: false });
-
-const teacherSchema = new mongoose.Schema({
-  fullname: { type: String, default: '' },
-  photo: { type: String, default: '' },
+const MediaSchema = new Schema({
+  type: { type: String, enum: ['video','image','file'], required: true },
+  url: { type: String, required: true },
   title: { type: String, default: '' },
-  bio: { type: String, default: '' },
-  externalLinks: { type: [String], default: [] }
+  durationSeconds: { type: Number, default: 0 } // optional for videos
 }, { _id: false });
 
-const RatingSchema = new mongoose.Schema({
-  by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  rating: { type: Number, required: true, min: 1, max: 5 }
-}, { _id: false });
-
-const CourseSchema = new mongoose.Schema({
-  courseId: { type: String, unique: true, index: true, sparse: true },
-  title: { type: String, required: true, index: true },
-  teacher: { type: teacherSchema, default: {} },
-  teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Teacher', default: null },
+const CourseSchema = new Schema({
+  courseId: { type: String, required: true, unique: true }, // e.g. CRS00001
+  title: { type: String, required: true },
   isFree: { type: Boolean, default: false },
   price: { type: Number, default: 0 },
-  discount: { type: Number, default: 0 },
+  discountPercent: { type: Number, default: 0 }, // 0-100
   duration: { type: String, default: '' },
-  durationMonths: { type: Number, default: 0 },
   shortDescription: { type: String, default: '' },
   longDescription: { type: String, default: '' },
   thumbnailUrl: { type: String, default: '' },
-  media: { type: [mediaSchema], default: [] },
-  categories: { type: [String], default: [] },
-  avgRating: { type: Number, default: 0 },
-  ratings: { type: [RatingSchema], default: [] },
-  buyersCount: { type: Number, default: 0 },
-  enrolled: { type: [mongoose.Schema.Types.ObjectId], ref: 'User', default: [] },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  media: { type: [MediaSchema], default: [] },
+  visibility: { type: String, enum: ['public','private'], default: 'public' },
+
+  createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+  createdAt: { type: Date, default: Date.now },
+  updatedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+  updatedAt: { type: Date, default: Date.now },
+
+  // soft-delete
   deleted: { type: Boolean, default: false },
   deletedAt: { type: Date, default: null },
-  deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
-}, { timestamps: true });
+  deletedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
 
-CourseSchema.methods.recalcAvgRating = function() {
-  if (!Array.isArray(this.ratings) || this.ratings.length === 0) { this.avgRating = 0; return; }
-  let sum = 0;
-  this.ratings.forEach(r => { sum += Number(r.rating || 0); });
-  this.avgRating = Math.round((sum / this.ratings.length) * 10) / 10;
-};
+  // keep a historical price snapshot field (optional)
+  lastPublishedPrice: { type: Number, default: 0 }
+});
 
-CourseSchema.pre('save', function(next) {
-  try {
-    if (typeof this.isModified === 'function') {
-      if (this.isModified('ratings')) this.recalcAvgRating();
-    } else {
-      // fallback
-      this.recalcAvgRating();
-    }
-    this.updatedAt = new Date();
-  } catch (e) { console.warn('pre save course error', e); }
+// index for text search
+CourseSchema.index({ title: 'text', shortDescription: 'text', longDescription: 'text', courseId: 'text' });
+
+CourseSchema.pre('save', function(next){
+  this.updatedAt = new Date();
+  if (!this.courseId) {
+    // Auto-generate a courseId if not present (CRS + zero padded count)
+    // NOTE: generation based on timestamp fallback to avoid collisions in distributed envs.
+    this.courseId = 'CRS' + String(Math.floor(Date.now() / 1000)).slice(-6);
+  }
+  if (!this.lastPublishedPrice) this.lastPublishedPrice = Number(this.price || 0);
   next();
 });
 
-CourseSchema.index({ createdAt: -1 });
-CourseSchema.index({ courseId: 1 });
-CourseSchema.index({ categories: 1 });
-CourseSchema.index({ avgRating: -1 });
-
-module.exports = mongoose.models.Course || mongoose.model('Course', CourseSchema);
+module.exports = mongoose.model('Course', CourseSchema);
+ 
