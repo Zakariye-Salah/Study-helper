@@ -1,20 +1,36 @@
-// backend/models/HelpMessageCourse.js
+// // backend/models/HelpMessageCourse.js
+// 'use strict';
+// const mongoose = require('mongoose');
+
+// const HelpMessageSchema = new mongoose.Schema({
+//   threadId: { type: String, default: null, index: true }, // optional thread grouping
+//   fromUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+//   toAdmin: { type: Boolean, default: false }, // if true message targets admin inbox
+//   toUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // user-specific messages from admin
+//   subject: { type: String, default: '' },
+//   text: { type: String, default: '' },
+//   read: { type: Boolean, default: false },
+//   meta: { type: Object, default: {} }, // e.g. { purchaseId, courseId, provider }
+//   createdAt: { type: Date, default: Date.now }
+// });
+
+// HelpMessageSchema.index({ toAdmin: 1, read: 1 });
+// HelpMessageSchema.index({ toUserId: 1, read: 1 });
+
+// module.exports = mongoose.models.HelpMessageCourse || mongoose.model('HelpMessageCourse', HelpMessageSchema);
+
+
+// backend/models/HelpMessage.js
 'use strict';
 const mongoose = require('mongoose');
 
 const HelpMessageSchema = new mongoose.Schema({
-  threadId: { type: String, default: null, index: true }, // optional thread grouping
+  threadId: { type: mongoose.Schema.Types.ObjectId, ref: 'HelpThread', required: true, index: true },
   fromUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-  toAdmin: { type: Boolean, default: false }, // if true message targets admin inbox
-  toUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // user-specific messages from admin
-  subject: { type: String, default: '' },
+  toAdmin: { type: Boolean, default: false }, // message directed to admin (from user)
+  toUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // reply to specific user
   text: { type: String, default: '' },
-  read: { type: Boolean, default: false },
-  meta: { type: Object, default: {} }, // e.g. { purchaseId, courseId, provider }
-  createdAt: { type: Date, default: Date.now }
-});
+  read: { type: Boolean, default: false }
+}, { timestamps: true });
 
-HelpMessageSchema.index({ toAdmin: 1, read: 1 });
-HelpMessageSchema.index({ toUserId: 1, read: 1 });
-
-module.exports = mongoose.models.HelpMessageCourse || mongoose.model('HelpMessageCourse', HelpMessageSchema);
+module.exports = mongoose.models.HelpMessage || mongoose.model('HelpMessage', HelpMessageSchema);
