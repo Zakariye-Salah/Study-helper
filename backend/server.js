@@ -408,11 +408,14 @@ const storiesRouter = require('./routes/stories');
 
 const coursesRouter = require('./routes/courses');
 const purchasesRouter = require('./routes/purchases');
-
-//const notificationsRouter = require('./routes/notifications');
-
+const notificationsRouter = require('./routes/notifications');
 const helpmsgsRouter = require('./routes/helpmsgs');
-// const recycleCourse = require('./routes/recycleCourse');
+const recycleCourse = require('./routes/recycleCourse');
+
+const lessonsRouters = require('./routes/lessons')
+const ratingsRouters = require('./routes/ratings');
+const commentsRouters =require('./routes/comments');
+
 
 let chatsRouter = null;
 try { chatsRouter = require('./routes/chats'); } catch (e) { /* optional */ }
@@ -552,14 +555,15 @@ app.use('/api/math-game', gamesRouter);
 app.use('/api/developers', developerRoutes);
 app.use('/api/stories', storiesRouter);
 
-app.use('/api/courses', coursesRouter);
+app.use('/api/courses',coursesRouter);
+app.use('/api/lessons', lessonsRouters);
 app.use('/api/purchases', purchasesRouter);
+app.use('/api/helpmsgs', helpmsgsRouter );
+app.use('/api/recycle', recycleCourse);
+app.use('/api/notifications', notificationsRouter);
+app.use('/api/ratings',ratingsRouters );
+app.use('/api/comments' , commentsRouters );
 
-// app.use('/api/notifications', notificationsRouter);
-
-app.use('/api/helpmsgs', helpmsgsRouter);
-
-// app.use('/api/recycleCourse', recycleCourse);
 
 
 
