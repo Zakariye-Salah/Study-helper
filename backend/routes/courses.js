@@ -8,19 +8,12 @@ const mongoose = require('mongoose');
 const Course = require('../models/Course');
 const Lesson = require('../models/Lesson');
 const Purchase = require('../models/Purchase');
+const HelpMessage = require('../models/HelpMessage');
 const User = require('../models/User');
 
-let HelpMessage = null;
-let HelpMessageCourse = null;
-let HelpThread = null;
-
-try { HelpMessage = require('../models/HelpMessage'); } catch (e) { HelpMessage = null; }
-try { HelpMessageCourse = require('../models/HelpMessageCourse'); } catch (e) { HelpMessageCourse = null; }
-try { HelpThread = require('../models/HelpThread'); } catch (e) { HelpThread = null; }
-
 const authMiddleware = require('../middleware/auth'); // exports single middleware function
-const requireAuth = authMiddleware;
 
+const requireAuth = authMiddleware;
 function requireRole(role) {
   return (req, res, next) => {
     try {
@@ -35,7 +28,6 @@ function requireRole(role) {
   };
 }
 
-// helper to compute discounted price
 function computeDiscounted(price = 0, discount = 0) {
   const p = Number(price || 0);
   const d = Number(discount || 0);
@@ -43,49 +35,20 @@ function computeDiscounted(price = 0, discount = 0) {
   return Math.round(p * (100 - Math.max(0, Math.min(100, d))) / 100);
 }
 
-// ----------------------
-// GET /api/courses/counts
+/**
+ * GET /api/courses/counts
+ * (keeps previous semantics)
+ */
 router.get('/counts', requireAuth, async (req, res) => {
   try {
     const checking = await Purchase.countDocuments({ status: 'checking' }).catch(() => 0);
-
     let help = 0;
     const role = ((req.user && req.user.role) || '').toString().toLowerCase();
-
-    // Prefer HelpMessageCourse (broadcast/thread hybrid) if present,
-    // else fallback to HelpMessage (your existing broadcast model).
-    if (HelpMessageCourse) {
-      if (role === 'admin') {
-        // count messages targeted to admin, unread
-        try {
-          help = await HelpMessageCourse.countDocuments({ $or: [{ toAdmin: true }, { toRole: 'admin' }, { broadcastToAll: true }], removed: { $ne: true }, read: false }).catch(()=>0);
-        } catch (e) { help = await HelpMessageCourse.countDocuments({ removed: { $ne: true } }).catch(()=>0); }
-      } else {
-        try {
-          help = await HelpMessageCourse.countDocuments({
-            removed: { $ne: true },
-            read: false,
-            $or: [
-              { toUserId: req.user._id },
-              { toUser: req.user._id },
-              { toUsers: req.user._id },
-              { broadcastToAll: true },
-              { toRole: role }
-            ]
-          }).catch(()=>0);
-        } catch (e) { help = 0; }
-      }
-    } else if (HelpMessage) {
-      // Fallback to older thread-style help messages your app may use
-      if (role === 'admin') {
-        help = await HelpMessage.countDocuments({ toAdmin: true, read: false }).catch(() => 0);
-      } else {
-        help = await HelpMessage.countDocuments({ toUser: req.user._id, read: false }).catch(() => 0);
-      }
+    if (role === 'admin') {
+      help = await HelpMessage.countDocuments({ toAdmin: true, read: false }).catch(() => 0);
     } else {
-      help = 0;
+      help = await HelpMessage.countDocuments({ toUser: req.user._id, read: false }).catch(() => 0);
     }
-
     return res.json({ ok: true, counts: { checking: Number(checking || 0), help: Number(help || 0) } });
   } catch (err) {
     console.error('GET /courses/counts error', err && (err.stack || err));
@@ -93,8 +56,9 @@ router.get('/counts', requireAuth, async (req, res) => {
   }
 });
 
-// ----------------------
-// GET /api/courses/categories
+/**
+ * GET /api/courses/categories
+ */
 router.get('/categories', async (req, res) => {
   try {
     const cats = await Course.aggregate([
@@ -105,7 +69,7 @@ router.get('/categories', async (req, res) => {
     ]).catch(() => []);
     const categories = (cats || []).map(c => c._id).filter(Boolean);
     if (!categories.length) {
-      return res.json({ ok: true, categories: ['Mobile Repairing', 'Languages', 'Subjects', 'Programming', 'Hacking', 'Business', 'Design'] });
+      return res.json({ ok: true, categories: ['Mobile Repairing', 'Languages', 'Subjects', 'Programming', 'Business', 'Design'] });
     }
     return res.json({ ok: true, categories });
   } catch (err) {
@@ -114,8 +78,10 @@ router.get('/categories', async (req, res) => {
   }
 });
 
-// ----------------------
-// GET /api/courses
+/**
+ * GET /api/courses
+ * search / filter / pagination
+ */
 router.get('/', async (req, res) => {
   try {
     const q = req.query.q ? String(req.query.q).trim() : '';
@@ -193,8 +159,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ----------------------
-// GET /api/courses/:id
+/**
+ * GET /api/courses/:id
+ */
 router.get('/:id', async (req, res) => {
   try {
     const id = req.params.id;
@@ -204,14 +171,11 @@ router.get('/:id', async (req, res) => {
     if (!course) course = await Course.findOne({ courseId: id }).lean();
     if (!course) return res.status(404).json({ ok: false, error: 'Course not found' });
 
-    // buyers count
     const buyersCount = await Purchase.countDocuments({ courseId: course._id, status: 'verified' }).catch(() => 0);
     course.buyersCount = Number(buyersCount || course.buyersCount || 0);
 
-    // compute discounted price
     course.discountedPrice = computeDiscounted(Number(course.price || 0), Number(course.discount || 0));
 
-    // optionally include lessons
     if (includeLessons) {
       const lessons = await Lesson.find({ courseId: course._id, deleted: { $ne: true } }).sort({ order: 1, createdAt: 1 }).lean().exec();
       course.lessons = lessons;
@@ -224,8 +188,9 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// ----------------------
-// POST /api/courses  (admin)
+/**
+ * POST /api/courses  (admin)
+ */
 router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const body = req.body || {};
@@ -279,7 +244,9 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
 
     try {
       const io = req.app && req.app.get && req.app.get('io');
-      if (io) io.emit('course:created', { courseId: doc._id, course: doc });
+      if (io) {
+        io.emit('course:created', { courseId: doc._id, course: doc });
+      }
     } catch (e) { console.warn('course create emit failed', e); }
 
     return res.json({ ok: true, course: doc });
@@ -290,8 +257,9 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
   }
 });
 
-// ----------------------
-// PUT /api/courses/:id  (admin)
+/**
+ * PUT /api/courses/:id  (admin)
+ */
 router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const id = req.params.id;
@@ -304,6 +272,7 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
     if (body.courseId) course.courseId = String(body.courseId).trim();
     if (body.title) course.title = String(body.title).trim();
 
+    // teacher updates
     if (body.teacher && typeof body.teacher === 'object') {
       course.teacher = {
         fullname: body.teacher.fullname || body.teacher.name || (course.teacher && course.teacher.fullname) || '',
@@ -342,8 +311,9 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
   }
 });
 
-// ----------------------
-// DELETE /api/courses/:id (soft-delete) (admin)
+/**
+ * DELETE /api/courses/:id (soft-delete) (admin)
+ */
 router.delete('/:id', requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const id = req.params.id;
@@ -371,8 +341,9 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req, res) => {
   }
 });
 
-// ----------------------
-// POST /api/courses/:id/restore (admin)
+/**
+ * POST /api/courses/:id/restore (admin)
+ */
 router.post('/:id/restore', requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const id = req.params.id;
@@ -393,8 +364,9 @@ router.post('/:id/restore', requireAuth, requireRole('admin'), async (req, res) 
   }
 });
 
-// ----------------------
-// LESSONS
+/**
+ * Lessons: GET /api/courses/:id/lessons
+ */
 router.get('/:id/lessons', async (req, res) => {
   try {
     const id = req.params.id;
@@ -411,6 +383,9 @@ router.get('/:id/lessons', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/courses/:id/lessons  (admin)
+ */
 router.post('/:id/lessons', requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const id = req.params.id;
@@ -444,6 +419,44 @@ router.post('/:id/lessons', requireAuth, requireRole('admin'), async (req, res) 
     return res.json({ ok: true, lesson: ls });
   } catch (err) {
     console.error('POST /courses/:id/lessons error', err && (err.stack || err));
+    return res.status(500).json({ ok: false, error: 'Server error' });
+  }
+});
+
+/**
+ * POST /api/courses/:id/rate  (authenticated user)
+ * Body: { rating: number }
+ * Upserts a rating from current user, recalculates avgRating.
+ */
+router.post('/:id/rate', requireAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const rating = Number((req.body && req.body.rating) || 0);
+    if (!rating || rating < 1 || rating > 5) return res.status(400).json({ ok: false, error: 'Rating must be 1..5' });
+
+    let course = null;
+    if (mongoose.Types.ObjectId.isValid(id)) course = await Course.findById(id);
+    if (!course) course = await Course.findOne({ courseId: id });
+    if (!course) return res.status(404).json({ ok: false, error: 'Course not found' });
+
+    const userId = req.user && req.user._id;
+    if (!userId) return res.status(401).json({ ok: false, error: 'Authentication required' });
+
+    // update or insert rating
+    const idx = (course.ratings || []).findIndex(r => String(r.by) === String(userId));
+    if (idx >= 0) {
+      course.ratings[idx].rating = rating;
+    } else {
+      course.ratings.push({ by: userId, rating });
+    }
+    // recalc
+    course.recalcAvgRating && course.recalcAvgRating();
+    await course.save();
+
+    // return updated rating summary
+    return res.json({ ok: true, avgRating: course.avgRating || 0, ratingsCount: (course.ratings || []).length });
+  } catch (err) {
+    console.error('POST /courses/:id/rate error', err && (err.stack || err));
     return res.status(500).json({ ok: false, error: 'Server error' });
   }
 });
