@@ -58,7 +58,10 @@ CourseSchema.methods.recalcAvgRating = function() {
 
 CourseSchema.pre('save', function(next) {
   // ensure avgRating in sync if ratings changed
-  if (this.isModified('ratings')) {
+  if (this.isModified && typeof this.isModified === 'function' && this.isModified('ratings')) {
+    this.recalcAvgRating();
+  } else if (!this.isModified) {
+    // for mongoose versions where isModified might not be present on doc
     this.recalcAvgRating();
   }
   this.updatedAt = new Date();
