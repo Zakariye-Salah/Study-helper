@@ -247,36 +247,54 @@
 
 // module.exports = router;
 
-
 // backend/routes/courses.js
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
+
 const auth = require('../middleware/auth');
 const roles = require('../middleware/roles');
 
 const Course = require('../models/Course');
-const Lesson = require('../models/Lesson');
-const Purchase = require('../models/Purchase');
+const Lesson = require('../models/Lesson'); // ensure Lesson model file uses guarded export
+// Use PurchaseAttempt for user payment attempts / enrollments
+const PurchaseAttempt = require('../models/PurchaseAttempt');
 
-function isObjectIdString(s) { return typeof s === 'string' && mongoose.Types.ObjectId.isValid(s); }
-function toObjectIdIfPossible(id) { try { const s = String(id || ''); if (isObjectIdString(s)) return new mongoose.Types.ObjectId(s); } catch(e){} return id; }
+function isObjectIdString(s) {
+  return typeof s === 'string' && mongoose.Types.ObjectId.isValid(s);
+}
+function toObjectIdIfPossible(id) {
+  try {
+    const s = String(id || '');
+    if (isObjectIdString(s)) return new mongoose.Types.ObjectId(s);
+  } catch (e) {}
+  return id;
+}
 
-// GET /courses? q, category, filter, sort, page, limit
+/**
+ * GET /api/courses
+ * Query params: q, category, filter=all|free|fee, sort=newest|price_asc|price_desc, page, limit
+ */
 router.get('/', auth, async (req, res) => {
   try {
     const q = (req.query.q || '').trim();
     const category = (req.query.category || '').trim();
     const filter = (req.query.filter || 'all').toLowerCase();
-    const sort = (req.query.sort || 'newest');
+    const sort = (req.query.sort || 'newest').toLowerCase();
     const page = Math.max(1, Number(req.query.page || 1));
-    const limit = Math.min(100, Number(req.query.limit || 20));
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 12)));
 
     const match = { deleted: { $ne: true }, visible: { $ne: false } };
 
     if (q) {
-      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'i');
-      match.$or = [{ title: re }, { 'teacher.name': re }, { courseId: re }, { shortDescription: re }, { longDescription: re }];
+      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      match.$or = [
+        { title: re },
+        { 'teacher.name': re },
+        { courseId: re },
+        { shortDescription: re },
+        { longDescription: re }
+      ];
     }
     if (category && category !== 'all') match.category = category;
     if (filter === 'free') match.isFree = true;
@@ -288,64 +306,70 @@ router.get('/', auth, async (req, res) => {
     if (sort === 'newest') sortObj = { createdAt: -1 };
 
     const [items, total] = await Promise.all([
-      Course.find(match).sort(sortObj).skip((page-1)*limit).limit(limit).lean(),
+      Course.find(match).sort(sortObj).skip((page - 1) * limit).limit(limit).lean(),
       Course.countDocuments(match)
     ]);
-    return res.json({ ok:true, items, total, page, limit });
+
+    return res.json({ ok: true, items, total, page, limit });
   } catch (err) {
     console.error('GET /courses', err);
-    return res.status(500).json({ ok:false, message: 'Server error' });
+    return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });
 
-// GET /courses/categories
+/**
+ * GET /api/courses/categories
+ */
 router.get('/categories', auth, async (req, res) => {
   try {
-    // simple aggregate of existing categories
     const cats = await Course.aggregate([
       { $match: { deleted: { $ne: true } } },
       { $group: { _id: '$category', count: { $sum: 1 } } },
       { $sort: { count: -1 } }
     ]);
     const categories = cats.map(c => c._id).filter(Boolean);
-    return res.json({ ok:true, categories });
+    return res.json({ ok: true, categories });
   } catch (err) {
     console.error('GET /courses/categories', err);
-    return res.status(500).json({ ok:false, message: 'Server error' });
+    return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });
 
-// GET /courses/:id
+/**
+ * GET /api/courses/:id
+ */
 router.get('/:id', auth, async (req, res) => {
   try {
     const id = req.params.id;
-    const c = await Course.findById(id).lean();
-    if (!c || c.deleted) return res.status(404).json({ ok:false, message:'Not found' });
-
-    // return full course; later server-side will enforce media access in media endpoints
-    return res.json({ ok:true, course: c });
+    // allow lookup by _id or courseId string
+    const course = await Course.findOne({ $or: [{ _id: id }, { courseId: id }] }).lean().exec();
+    if (!course || course.deleted) return res.status(404).json({ ok: false, message: 'Course not found' });
+    return res.json({ ok: true, course });
   } catch (err) {
     console.error('GET /courses/:id', err);
-    return res.status(500).json({ ok:false, message: 'Server error' });
+    return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });
 
-// POST /courses (admin create)
+/**
+ * POST /api/courses  (admin only)
+ */
 router.post('/', auth, roles(['admin']), async (req, res) => {
   try {
     const body = req.body || {};
-    if (!body.title) return res.status(400).json({ ok:false, message: 'Title required' });
-    // unique courseId generation if not supplied
+    if (!body.title) return res.status(400).json({ ok: false, message: 'Title required' });
+
+    // ensure uniqueness for supplied courseId
+    if (body.courseId) {
+      const found = await Course.findOne({ courseId: body.courseId }).lean();
+      if (found) return res.status(400).json({ ok: false, message: 'courseId must be unique' });
+    }
+
+    // generate if not provided
     let courseId = body.courseId && String(body.courseId).trim();
     if (!courseId) {
-      const now = Date.now();
-      // generate a unique CRSxxxxx - naive but OK
       const count = await Course.countDocuments({});
-      courseId = 'CRS' + String((count + 1)).padStart(5, '0');
-    } else {
-      // ensure uniqueness
-      const found = await Course.findOne({ courseId: courseId });
-      if (found) return res.status(400).json({ ok:false, message: 'courseId must be unique' });
+      courseId = 'CRS' + String(count + 1).padStart(5, '0');
     }
 
     const c = new Course({
@@ -362,134 +386,169 @@ router.post('/', auth, roles(['admin']), async (req, res) => {
       thumbnailUrl: body.thumbnailUrl || '',
       media: Array.isArray(body.media) ? body.media : [],
       marketingProvenCount: Number(body.marketingProvenCount || 0),
-      createdBy: toObjectIdIfPossible(req.user._id)
+      visibility: body.visibility || 'public',
+      createdBy: toObjectIdIfPossible(req.user._id),
+      updatedBy: toObjectIdIfPossible(req.user._id),
+      lastPublishedPrice: Number(body.price || 0)
     });
     await c.save();
-    return res.json({ ok:true, course: c });
+    return res.json({ ok: true, course: c });
   } catch (err) {
     console.error('POST /courses', err);
-    return res.status(500).json({ ok:false, message: 'Server error' });
+    if (err && err.code === 11000) return res.status(400).json({ ok: false, message: 'Duplicate courseId' });
+    return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });
 
-// PUT /courses/:id (admin edit)
+/**
+ * PUT /api/courses/:id  (admin)
+ */
 router.put('/:id', auth, roles(['admin']), async (req, res) => {
   try {
     const id = req.params.id;
     const body = req.body || {};
     const c = await Course.findById(id);
-    if (!c) return res.status(404).json({ ok:false, message:'Not found' });
+    if (!c) return res.status(404).json({ ok: false, message: 'Course not found' });
 
     if (body.courseId && String(body.courseId) !== String(c.courseId)) {
       const exists = await Course.findOne({ courseId: String(body.courseId) });
-      if (exists) return res.status(400).json({ ok:false, message:'courseId must be unique' });
+      if (exists) return res.status(400).json({ ok: false, message: 'courseId must be unique' });
       c.courseId = String(body.courseId);
     }
-    if (body.title) c.title = body.title;
-    if (body.category) c.category = body.category;
-    if (body.teacher) c.teacher = body.teacher;
-    if (typeof body.isFree !== 'undefined') c.isFree = !!body.isFree;
-    if (typeof body.price !== 'undefined') c.price = Number(body.price || 0);
-    if (typeof body.discountPercent !== 'undefined') c.discountPercent = Number(body.discountPercent || 0);
-    if (typeof body.duration !== 'undefined') c.duration = body.duration;
-    if (typeof body.shortDescription !== 'undefined') c.shortDescription = body.shortDescription;
-    if (typeof body.longDescription !== 'undefined') c.longDescription = body.longDescription;
-    if (typeof body.thumbnailUrl !== 'undefined') c.thumbnailUrl = body.thumbnailUrl;
-    if (Array.isArray(body.media)) c.media = body.media;
-    if (typeof body.marketingProvenCount !== 'undefined') c.marketingProvenCount = Number(body.marketingProvenCount || 0);
+
+    const upable = ['title','category','teacher','isFree','price','discountPercent','duration','shortDescription','longDescription','thumbnailUrl','media','visibility','marketingProvenCount'];
+    upable.forEach(k => {
+      if (typeof body[k] !== 'undefined') c[k] = body[k];
+    });
+
     c.updatedBy = toObjectIdIfPossible(req.user._id);
+    c.updatedAt = new Date();
+    if (typeof body.price !== 'undefined') c.lastPublishedPrice = Number(body.price || 0);
+
     await c.save();
-    return res.json({ ok:true, notice:'Saved', course: c });
+    return res.json({ ok: true, notice: 'Saved', course: c });
   } catch (err) {
     console.error('PUT /courses/:id', err);
-    return res.status(500).json({ ok:false, message: 'Server error' });
+    if (err && err.code === 11000) return res.status(400).json({ ok: false, message: 'Duplicate courseId' });
+    return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });
 
-// DELETE /courses/:id (soft-delete)
+/**
+ * DELETE /api/courses/:id  (soft-delete admin)
+ */
 router.delete('/:id', auth, roles(['admin']), async (req, res) => {
   try {
     const id = req.params.id;
     const c = await Course.findById(id);
-    if (!c) return res.status(404).json({ ok:false, message:'Not found' });
+    if (!c) return res.status(404).json({ ok: false, message: 'Course not found' });
+    if (c.deleted) return res.status(400).json({ ok: false, message: 'Already deleted' });
+
     c.deleted = true;
     c.deletedAt = new Date();
     c.deletedBy = toObjectIdIfPossible(req.user._id);
     c.visible = false;
     await c.save();
-    return res.json({ ok:true });
+    return res.json({ ok: true, deleted: true });
   } catch (err) {
     console.error('DELETE /courses/:id', err);
-    return res.status(500).json({ ok:false, message: 'Server error' });
+    return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });
 
-// POST /courses/:id/restore (admin)
+/**
+ * POST /api/courses/:id/restore  (admin)
+ */
 router.post('/:id/restore', auth, roles(['admin']), async (req, res) => {
   try {
     const id = req.params.id;
     const c = await Course.findById(id);
-    if (!c) return res.status(404).json({ ok:false, message:'Not found' });
+    if (!c) return res.status(404).json({ ok: false, message: 'Course not found' });
+    if (!c.deleted) return res.status(400).json({ ok: false, message: 'Course not deleted' });
+
     c.deleted = false;
     c.deletedAt = null;
     c.deletedBy = null;
     c.visible = true;
     await c.save();
-    return res.json({ ok:true });
+    return res.json({ ok: true, restored: true });
   } catch (err) {
     console.error('POST /courses/:id/restore', err);
-    return res.status(500).json({ ok:false, message: 'Server error' });
+    return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });
 
-// DELETE /courses/:id/permanent (admin)
+/**
+ * DELETE /api/courses/:id/permanent  (admin)
+ */
 router.delete('/:id/permanent', auth, roles(['admin']), async (req, res) => {
   try {
     const id = req.params.id;
-    // check enrollments/purchases
-    const existing = await Purchase.findOne({ courseId: toObjectIdIfPossible(id) });
-    if (existing) {
-      return res.status(400).json({ ok:false, message: 'Course has verified enrollments. Remove them or confirm with extra step.' });
+    const c = await Course.findById(id);
+    if (!c) return res.status(404).json({ ok: false, message: 'Course not found' });
+
+    // check verified purchase attempts
+    const purchaseCount = await PurchaseAttempt.countDocuments({ courseId: c._id, status: 'verified' }).catch(() => 0);
+    if (purchaseCount > 0 && !(req.query.force === '1' || req.query.force === 'true')) {
+      return res.status(400).json({ ok: false, message: 'Course has verified purchases. Pass ?force=1 to permanently delete and remove associated records.' });
     }
-    await Course.deleteOne({ _id: id });
-    // optionally delete lessons
-    await Lesson.deleteMany({ courseId: id }).catch(()=>{});
-    return res.json({ ok:true });
+
+    // delete course and optionally cascade
+    await Course.deleteOne({ _id: c._id });
+    if (req.query.force === '1' || req.query.force === 'true') {
+      await PurchaseAttempt.deleteMany({ courseId: c._id }).catch(() => {});
+    }
+
+    // delete lessons belonging to course
+    await Lesson.deleteMany({ courseId: c._id }).catch(() => {});
+
+    return res.json({ ok: true, deletedPermanently: true });
   } catch (err) {
     console.error('DELETE /courses/:id/permanent', err);
-    return res.status(500).json({ ok:false, message: 'Server error' });
+    return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });
 
-// GET /courses/:id/media/:idx protected access (only verified purchasers or admin)
+/**
+ * GET /api/courses/:id/media/:idx
+ * Only return media object; server-side consumer must stream/protect actual files/URLs
+ */
 router.get('/:id/media/:idx', auth, async (req, res) => {
   try {
     const courseId = req.params.id;
     const idx = Number(req.params.idx || 0);
-    const course = await Course.findById(courseId).lean();
-    if (!course) return res.status(404).json({ ok:false, message: 'Not found' });
+
+    const course = await Course.findOne({ $or: [{ _id: courseId }, { courseId: courseId }] }).lean();
+    if (!course) return res.status(404).json({ ok: false, message: 'Course not found' });
+    if (!course.media || !Array.isArray(course.media) || !course.media[idx]) {
+      return res.status(404).json({ ok: false, message: 'Media not found' });
+    }
 
     // admin always allowed
-    const role = (req.user && req.user.role || '').toLowerCase();
+    const role = (req.user && (req.user.role || '')).toLowerCase();
     if (role === 'admin') {
-      const media = course.media && course.media[idx] ? course.media[idx] : null;
-      if (!media) return res.status(404).json({ ok:false, message:'Media not found' });
-      return res.json({ ok:true, media });
+      const media = course.media[idx];
+      return res.json({ ok: true, media });
     }
 
-    // check purchase
-    const PurchaseModel = require('../models/Purchase');
-    const purchase = await PurchaseModel.findOne({ courseId: toObjectIdIfPossible(courseId), userId: toObjectIdIfPossible(req.user._id), status: 'verified' }).lean();
-    if (!purchase) {
-      // allow preview lessons/media if marked as external preview? Here we block media access for non-owners
-      return res.status(403).json({ ok:false, message:'Not allowed' });
+    // free course -> allow
+    if (course.isFree) {
+      return res.json({ ok: true, media: course.media[idx] });
     }
-    const media = course.media && course.media[idx] ? course.media[idx] : null;
-    if (!media) return res.status(404).json({ ok:false, message:'Media not found' });
-    return res.json({ ok:true, media });
+
+    // otherwise check verified purchase
+    const has = await PurchaseAttempt.findOne({
+      userId: toObjectIdIfPossible(req.user._id),
+      courseId: toObjectIdIfPossible(course._id),
+      status: 'verified'
+    }).lean();
+
+    if (!has) return res.status(403).json({ ok: false, message: 'Not allowed' });
+
+    return res.json({ ok: true, media: course.media[idx] });
   } catch (err) {
     console.error('GET /courses/:id/media/:idx', err);
-    return res.status(500).json({ ok:false, message: 'Server error' });
+    return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });
 
