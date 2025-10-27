@@ -22,14 +22,15 @@ const RatingSchema = new mongoose.Schema({
 }, { _id: false });
 
 const CourseSchema = new mongoose.Schema({
-  courseId: { type: String, unique: true, index: true, sparse: true }, // CRS00001 (optional)
+  courseId: { type: String, unique: true, index: true, sparse: true },
   title: { type: String, required: true, index: true },
-  teacher: { type: teacherSchema, default: {} }, // inline teacher snapshot
+  teacher: { type: teacherSchema, default: {} },
   teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Teacher', default: null },
   isFree: { type: Boolean, default: false },
   price: { type: Number, default: 0 },
-  discount: { type: Number, default: 0 }, // percent
+  discount: { type: Number, default: 0 },
   duration: { type: String, default: '' },
+  durationMonths: { type: Number, default: 0 },
   shortDescription: { type: String, default: '' },
   longDescription: { type: String, default: '' },
   thumbnailUrl: { type: String, default: '' },
@@ -38,6 +39,7 @@ const CourseSchema = new mongoose.Schema({
   avgRating: { type: Number, default: 0 },
   ratings: { type: [RatingSchema], default: [] },
   buyersCount: { type: Number, default: 0 },
+  enrolled: { type: [mongoose.Schema.Types.ObjectId], ref: 'User', default: [] },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   deleted: { type: Boolean, default: false },
@@ -45,26 +47,23 @@ const CourseSchema = new mongoose.Schema({
   deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { timestamps: true });
 
-// convenience: recalc avgRating
 CourseSchema.methods.recalcAvgRating = function() {
-  if (!Array.isArray(this.ratings) || this.ratings.length === 0) {
-    this.avgRating = 0;
-    return;
-  }
+  if (!Array.isArray(this.ratings) || this.ratings.length === 0) { this.avgRating = 0; return; }
   let sum = 0;
   this.ratings.forEach(r => { sum += Number(r.rating || 0); });
-  this.avgRating = Math.round((sum / this.ratings.length) * 10) / 10; // one decimal
+  this.avgRating = Math.round((sum / this.ratings.length) * 10) / 10;
 };
 
 CourseSchema.pre('save', function(next) {
-  // ensure avgRating in sync if ratings changed
-  if (this.isModified && typeof this.isModified === 'function' && this.isModified('ratings')) {
-    this.recalcAvgRating();
-  } else if (!this.isModified) {
-    // for mongoose versions where isModified might not be present on doc
-    this.recalcAvgRating();
-  }
-  this.updatedAt = new Date();
+  try {
+    if (typeof this.isModified === 'function') {
+      if (this.isModified('ratings')) this.recalcAvgRating();
+    } else {
+      // fallback
+      this.recalcAvgRating();
+    }
+    this.updatedAt = new Date();
+  } catch (e) { console.warn('pre save course error', e); }
   next();
 });
 
