@@ -1,30 +1,37 @@
 // backend/models/Course.js
+'use strict';
 const mongoose = require('mongoose');
-const { Schema } = mongoose;
 
-const MediaSchema = new Schema({
-  type: { type: String, enum: ['video','image','file'], required: true },
-  url: { type: String, required: true },
-  title: { type: String }
+const mediaSchema = new mongoose.Schema({
+  type: { type: String, enum: ['video','image','pdf','other'], default: 'video' },
+  url: { type: String, default: '' },
+  title: { type: String, default: '' }
 }, { _id: false });
 
-const CourseSchema = new Schema({
-  courseId: { type: String, required: true, unique: true }, // e.g. CRS00001
-  title: { type: String, required: true },
+const CourseSchema = new mongoose.Schema({
+  courseId: { type: String, unique: true, index: true }, // CRS00001
+  title: { type: String, required: true, index: true },
   isFree: { type: Boolean, default: false },
   price: { type: Number, default: 0 },
-  discount: { type: Number, default: 0 }, // percent 0..100
-  duration: { type: String }, // e.g. '1 month'
-  shortDescription: { type: String },
-  longDescription: { type: String },
-  thumbnailUrl: { type: String },
-  media: { type: [MediaSchema], default: [] },
-  visibility: { type: String, enum: ['public','private'], default: 'public' },
-  createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
-  updatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  discount: { type: Number, default: 0 }, // percent
+  duration: { type: String, default: '' },
+  shortDescription: { type: String, default: '' },
+  longDescription: { type: String, default: '' },
+  thumbnailUrl: { type: String, default: '' },
+  media: { type: [mediaSchema], default: [] },
+  categories: { type: [String], default: [] },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  createdAt: { type: Date, default: Date.now },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  updatedAt: { type: Date, default: Date.now },
   deleted: { type: Boolean, default: false },
-  deletedAt: { type: Date },
-  deletedBy: { type: Schema.Types.ObjectId, ref: 'User' }
+  deletedAt: { type: Date, default: null },
+  deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { timestamps: true });
 
-module.exports = mongoose.model('Course', CourseSchema);
+CourseSchema.pre('save', function(next) {
+  this.updatedAt = new Date();
+  next();
+});
+
+module.exports = mongoose.models.Course || mongoose.model('Course', CourseSchema);
