@@ -7,13 +7,16 @@ const mongoose = require('mongoose');
 
 const Course = require('../models/Course');
 const Lesson = require('../models/Lesson');
-const Purchase = require('../models/Purchase');
-const HelpMessage = require('../models/HelpMessage');
-const User = require('../models/User');
 
-const authMiddleware = require('../middleware/auth'); // exports single middleware function
+// Purchase and HelpMessage may be present in your codebase. Try to require them defensively.
+let Purchase = null;
+let HelpMessage = null;
+try { Purchase = require('../models/Purchase'); } catch (e) { console.warn('Purchase model not found or failed to load — purchase-related aggregations will be skipped'); }
+try { HelpMessage = require('../models/HelpMessage'); } catch (e) { /* optional */ }
 
-const requireAuth = authMiddleware;
+const authModule = require('../middleware/auth');
+const requireAuth = authModule && (authModule.requireAuth || authModule); // supports both import styles
+
 function requireRole(role) {
   return (req, res, next) => {
     try {
@@ -37,16 +40,15 @@ function computeDiscounted(price = 0, discount = 0) {
 
 /**
  * GET /api/courses/counts
- * (keeps previous semantics)
  */
 router.get('/counts', requireAuth, async (req, res) => {
   try {
-    const checking = await Purchase.countDocuments({ status: 'checking' }).catch(() => 0);
+    const checking = (typeof Purchase === 'function') ? await Purchase.countDocuments({ status: 'checking' }).catch(() => 0) : 0;
     let help = 0;
     const role = ((req.user && req.user.role) || '').toString().toLowerCase();
-    if (role === 'admin') {
+    if (role === 'admin' && HelpMessage) {
       help = await HelpMessage.countDocuments({ toAdmin: true, read: false }).catch(() => 0);
-    } else {
+    } else if (HelpMessage) {
       help = await HelpMessage.countDocuments({ toUser: req.user._id, read: false }).catch(() => 0);
     }
     return res.json({ ok: true, counts: { checking: Number(checking || 0), help: Number(help || 0) } });
@@ -80,7 +82,6 @@ router.get('/categories', async (req, res) => {
 
 /**
  * GET /api/courses
- * search / filter / pagination
  */
 router.get('/', async (req, res) => {
   try {
@@ -115,14 +116,21 @@ router.get('/', async (req, res) => {
     const total = await Course.countDocuments(filter).catch(() => 0);
     const docs = await Course.find(filter).sort(sortObj).skip((page - 1) * limit).limit(limit).lean().exec();
 
-    // compute buyersCount for returned courses (aggregate)
-    const courseIds = docs.map(d => d._id).filter(Boolean);
+    // compute buyersCount via Purchase aggregation only when Purchase model available
+    const courseIds = (docs || []).map(d => d._id).filter(Boolean);
     let counts = [];
-    if (courseIds && courseIds.length) {
-      counts = await Purchase.aggregate([
-        { $match: { courseId: { $in: courseIds.map(id => mongoose.Types.ObjectId(id)) }, status: 'verified' } },
-        { $group: { _id: '$courseId', count: { $sum: 1 } } }
-      ]).catch(() => []);
+    if (Purchase && Array.isArray(courseIds) && courseIds.length) {
+      // ensure valid ObjectId list
+      const validIds = courseIds.filter(id => mongoose.isValidObjectId(id)).map(id => mongoose.Types.ObjectId(id));
+      if (validIds.length) {
+        counts = await Purchase.aggregate([
+          { $match: { courseId: { $in: validIds }, status: 'verified' } },
+          { $group: { _id: '$courseId', count: { $sum: 1 } } }
+        ]).catch((e) => {
+          console.warn('Purchase aggregation failed', e && e.message);
+          return [];
+        });
+      }
     }
     const countMap = {};
     (counts || []).forEach(c => { countMap[String(c._id)] = Number(c.count || 0); });
@@ -167,11 +175,11 @@ router.get('/:id', async (req, res) => {
     const id = req.params.id;
     const includeLessons = !!(req.query.includeLessons && (req.query.includeLessons === '1' || req.query.includeLessons === 'true'));
     let course = null;
-    if (mongoose.Types.ObjectId.isValid(id)) course = await Course.findById(id).lean();
+    if (mongoose.isValidObjectId(id)) course = await Course.findById(id).lean();
     if (!course) course = await Course.findOne({ courseId: id }).lean();
     if (!course) return res.status(404).json({ ok: false, error: 'Course not found' });
 
-    const buyersCount = await Purchase.countDocuments({ courseId: course._id, status: 'verified' }).catch(() => 0);
+    const buyersCount = (typeof Purchase === 'function') ? await Purchase.countDocuments({ courseId: course._id, status: 'verified' }).catch(() => 0) : (course.buyersCount || 0);
     course.buyersCount = Number(buyersCount || course.buyersCount || 0);
 
     course.discountedPrice = computeDiscounted(Number(course.price || 0), Number(course.discount || 0));
@@ -244,9 +252,7 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
 
     try {
       const io = req.app && req.app.get && req.app.get('io');
-      if (io) {
-        io.emit('course:created', { courseId: doc._id, course: doc });
-      }
+      if (io) io.emit('course:created', { courseId: doc._id, course: doc });
     } catch (e) { console.warn('course create emit failed', e); }
 
     return res.json({ ok: true, course: doc });
@@ -265,14 +271,13 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
     const id = req.params.id;
     const body = req.body || {};
     let course = null;
-    if (mongoose.Types.ObjectId.isValid(id)) course = await Course.findById(id);
+    if (mongoose.isValidObjectId(id)) course = await Course.findById(id);
     if (!course) course = await Course.findOne({ courseId: id });
     if (!course) return res.status(404).json({ ok: false, error: 'Not found' });
 
     if (body.courseId) course.courseId = String(body.courseId).trim();
     if (body.title) course.title = String(body.title).trim();
 
-    // teacher updates
     if (body.teacher && typeof body.teacher === 'object') {
       course.teacher = {
         fullname: body.teacher.fullname || body.teacher.name || (course.teacher && course.teacher.fullname) || '',
@@ -318,7 +323,7 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const id = req.params.id;
     let course = null;
-    if (mongoose.Types.ObjectId.isValid(id)) course = await Course.findById(id);
+    if (mongoose.isValidObjectId(id)) course = await Course.findById(id);
     if (!course) course = await Course.findOne({ courseId: id });
     if (!course) return res.status(404).json({ ok: false, error: 'Not found' });
 
@@ -348,7 +353,7 @@ router.post('/:id/restore', requireAuth, requireRole('admin'), async (req, res) 
   try {
     const id = req.params.id;
     let course = null;
-    if (mongoose.Types.ObjectId.isValid(id)) course = await Course.findById(id);
+    if (mongoose.isValidObjectId(id)) course = await Course.findById(id);
     if (!course) course = await Course.findOne({ courseId: id });
     if (!course) return res.status(404).json({ ok: false, error: 'Not found' });
 
@@ -365,13 +370,13 @@ router.post('/:id/restore', requireAuth, requireRole('admin'), async (req, res) 
 });
 
 /**
- * Lessons: GET /api/courses/:id/lessons
+ * GET /api/courses/:id/lessons
  */
 router.get('/:id/lessons', async (req, res) => {
   try {
     const id = req.params.id;
     let course = null;
-    if (mongoose.Types.ObjectId.isValid(id)) course = await Course.findById(id).lean();
+    if (mongoose.isValidObjectId(id)) course = await Course.findById(id).lean();
     if (!course) course = await Course.findOne({ courseId: id }).lean();
     if (!course) return res.status(404).json({ ok: false, error: 'Course not found' });
 
@@ -391,7 +396,7 @@ router.post('/:id/lessons', requireAuth, requireRole('admin'), async (req, res) 
     const id = req.params.id;
     const body = req.body || {};
     let course = null;
-    if (mongoose.Types.ObjectId.isValid(id)) course = await Course.findById(id);
+    if (mongoose.isValidObjectId(id)) course = await Course.findById(id);
     if (!course) course = await Course.findOne({ courseId: id });
     if (!course) return res.status(404).json({ ok: false, error: 'Course not found' });
 
@@ -426,7 +431,6 @@ router.post('/:id/lessons', requireAuth, requireRole('admin'), async (req, res) 
 /**
  * POST /api/courses/:id/rate  (authenticated user)
  * Body: { rating: number }
- * Upserts a rating from current user, recalculates avgRating.
  */
 router.post('/:id/rate', requireAuth, async (req, res) => {
   try {
@@ -435,25 +439,32 @@ router.post('/:id/rate', requireAuth, async (req, res) => {
     if (!rating || rating < 1 || rating > 5) return res.status(400).json({ ok: false, error: 'Rating must be 1..5' });
 
     let course = null;
-    if (mongoose.Types.ObjectId.isValid(id)) course = await Course.findById(id);
+    if (mongoose.isValidObjectId(id)) course = await Course.findById(id);
     if (!course) course = await Course.findOne({ courseId: id });
     if (!course) return res.status(404).json({ ok: false, error: 'Course not found' });
 
     const userId = req.user && req.user._id;
     if (!userId) return res.status(401).json({ ok: false, error: 'Authentication required' });
 
-    // update or insert rating
     const idx = (course.ratings || []).findIndex(r => String(r.by) === String(userId));
     if (idx >= 0) {
       course.ratings[idx].rating = rating;
     } else {
       course.ratings.push({ by: userId, rating });
     }
-    // recalc
-    course.recalcAvgRating && course.recalcAvgRating();
+
+    if (typeof course.recalcAvgRating === 'function') course.recalcAvgRating();
+    else {
+      // fallback: manual recalc
+      if (Array.isArray(course.ratings) && course.ratings.length) {
+        let sum = 0;
+        course.ratings.forEach(r => sum += Number(r.rating || 0));
+        course.avgRating = Math.round((sum / course.ratings.length) * 10) / 10;
+      } else course.avgRating = 0;
+    }
+
     await course.save();
 
-    // return updated rating summary
     return res.json({ ok: true, avgRating: course.avgRating || 0, ratingsCount: (course.ratings || []).length });
   } catch (err) {
     console.error('POST /courses/:id/rate error', err && (err.stack || err));
