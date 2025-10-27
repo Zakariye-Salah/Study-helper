@@ -1,6 +1,6 @@
 // // backend/server.js
 // 'use strict';
-//
+
 // const express = require('express');
 // const mongoose = require('mongoose');
 // const cors = require('cors');
@@ -411,6 +411,9 @@ const purchasesRouter = require('./routes/purchases');
 
 const notificationsRouter = require('./routes/notifications');
 
+const helpCourseRouter = require('./routes/helpCourse');
+const recycleCourse = require('./routes/recycleCourse');
+
 let chatsRouter = null;
 try { chatsRouter = require('./routes/chats'); } catch (e) { /* optional */ }
 
@@ -552,6 +555,13 @@ app.use('/api/courses', coursesRouter);
 app.use('/api/purchases', purchasesRouter);
 
 app.use('/api/notifications', notificationsRouter);
+
+app.use('/api/helpCourse', helpCourseRouter);
+
+app.use('/api/recycleCourse', recycleCourse);
+
+
+
 
 // root
 app.get('/', (req, res) => res.json({ ok:true, message:'School Manager API' }));
