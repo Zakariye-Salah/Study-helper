@@ -1,14 +1,15 @@
-// backend/models/HelpMessageCourses.js
+// backend/models/HelpMessageCourse.js
+'use strict';
 const mongoose = require('mongoose');
-const { Schema } = mongoose;
 
-const HelpMessageSchema = new Schema({
-  threadId: { type: String, index: true },
-  fromUserId: { type: Schema.Types.ObjectId, ref: 'User' },
-  toAdmin: { type: Boolean, default: true },
-  toUserId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
-  body: { type: String, required: true },
-  read: { type: Boolean, default: false }
-}, { timestamps: true });
+const HelpMessageSchema = new mongoose.Schema({
+  threadId: { type: String, default: null },
+  fromUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  toAdmin: { type: Boolean, default: false },
+  toUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  text: { type: String, default: '' },
+  read: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
+});
 
-module.exports = mongoose.model('HelpMessageCourses', HelpMessageSchema);
+module.exports = mongoose.models.HelpMessageCourse || mongoose.model('HelpMessageCourse', HelpMessageSchema);
