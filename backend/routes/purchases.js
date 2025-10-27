@@ -1,147 +1,193 @@
 // backend/routes/purchases.js
+'use strict';
 const express = require('express');
-const mongoose = require('mongoose');
 const router = express.Router();
-
-const PurchaseAttempt = require('../models/PurchaseAttempt');
+const Purchase = require('../models/Purchase');
 const Course = require('../models/Course');
-const HelpMessage = require('../models/HelpMessageCourses');
+const HelpMsg = require('../models/HelpMessageCourse');
+const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
-const auth = require('../middleware/auth');
-const roles = require('../middleware/roles');
-
-function toObjectIdIfPossible(id) {
-  try { if (mongoose.Types.ObjectId.isValid(String(id))) return mongoose.Types.ObjectId(String(id)); } catch(e) {}
-  return id;
+// same auth middleware used in courses.js (or extract to shared util)
+// quick reimplementation:
+async function requireAuth(req, res, next) {
+  try {
+    const auth = req.headers.authorization || '';
+    const token = auth.replace(/^Bearer\s+/i,'').trim();
+    if (!token) return res.status(401).json({ ok:false, error:'Authentication required' });
+    const secret = process.env.JWT_SECRET || 'secret';
+    const payload = jwt.verify(token, secret);
+    if (!payload || !payload.sub) return res.status(401).json({ ok:false, error:'Invalid token' });
+    const u = await User.findById(payload.sub).lean().catch(()=>null);
+    if (!u) return res.status(401).json({ ok:false, error:'User not found' });
+    req.user = u;
+    next();
+  } catch (err) {
+    console.warn('requireAuth failed', err && err.message);
+    return res.status(401).json({ ok:false, error:'Auth failed' });
+  }
 }
 
-/* POST /purchases - create attempt */
-router.post('/', auth, async (req, res) => {
+function requireRole(role) {
+  return (req, res, next) => {
+    const myRole = (req.user && req.user.role || '').toLowerCase();
+    if (myRole !== role) return res.status(403).json({ ok:false, error:'Forbidden' });
+    next();
+  };
+}
+
+/**
+ * POST /api/purchases
+ * create a purchase attempt or enrollment for free courses
+ */
+router.post('/', requireAuth, async (req, res) => {
   try {
-    const { courseId, provider, enteredPhoneNumber, amount } = req.body || {};
-    if (!courseId) return res.status(400).json({ ok:false, message:'courseId required' });
+    const body = req.body || {};
+    const courseId = body.courseId;
+    if (!courseId) return res.status(400).json({ ok:false, error:'courseId required' });
 
-    // find course by _id or courseId
-    let course = null;
-    if (mongoose.Types.ObjectId.isValid(String(courseId))) course = await Course.findById(courseId).exec();
-    if (!course) course = await Course.findOne({ courseId: String(courseId) }).exec();
-    if (!course) return res.status(404).json({ ok:false, message:'Course not found' });
-    if (course.deleted) return res.status(400).json({ ok:false, message:'Course deleted' });
+    const course = await Course.findById(courseId).lean().catch(()=>null) || await Course.findOne({ courseId: courseId }).lean().catch(()=>null);
+    if (!course) return res.status(404).json({ ok:false, error:'Course not found' });
 
-    const cost = Number(amount !== undefined ? amount : (course.isFree ? 0 : course.price || 0));
-    const pa = new PurchaseAttempt({
-      userId: toObjectIdIfPossible(req.user._id),
+    // if free, create a verified purchase record immediately
+    if (course.isFree) {
+      const p = new Purchase({
+        userId: req.user._id,
+        courseId: course._id,
+        courseSnapshot: { courseId: course.courseId, title: course.title, price: 0 },
+        provider: 'Other',
+        enteredPhoneNumber: '',
+        amount: 0,
+        status: 'verified',
+        verifiedAt: new Date(),
+        verifiedBy: req.user._id
+      });
+      await p.save();
+      // emit socket notification if available
+      const io = req.app && req.app.get && req.app.get('io');
+      if (io) io.to('user:' + String(req.user._id)).emit('purchase:verified', { purchaseId: p._id });
+      return res.json({ ok:true, purchase: p });
+    }
+
+    // Paid course flow
+    const prov = body.provider || 'Other';
+    const phone = body.enteredPhoneNumber || '';
+    const amount = Number(body.amount || course.price || 0);
+
+    const newP = new Purchase({
+      userId: req.user._id,
       courseId: course._id,
-      courseSnapshot: {
-        courseId: course.courseId,
-        title: course.title,
-        price: course.price,
-        isFree: course.isFree,
-        discount: course.discount
-      },
-      provider: provider || 'Other',
-      enteredPhoneNumber: enteredPhoneNumber || '',
-      amount: cost,
-      status: course.isFree ? 'verified' : 'checking',
-      verifiedAt: course.isFree ? new Date() : null,
-      verifiedBy: course.isFree ? toObjectIdIfPossible(req.user._id) : null
+      courseSnapshot: { courseId: course.courseId, title: course.title, price: course.price || 0 },
+      provider: prov,
+      enteredPhoneNumber: phone,
+      amount: amount,
+      status: 'checking'
     });
-    await pa.save();
+    await newP.save();
 
-    // if verified immediately (free), notify via HelpMessage
-    if (pa.status === 'verified') {
-      const msg = new HelpMessage({
-        threadId: 'purchase-' + String(pa._id),
-        fromUserId: toObjectIdIfPossible(req.user._id),
+    // notify admins (socket emit)
+    try {
+      const io = req.app && req.app.get && req.app.get('io');
+      if (io) {
+        const checkingCount = await Purchase.countDocuments({ status: 'checking' }).catch(()=>0);
+        io.emit('notification.checking_count_update', { count: checkingCount });
+        io.emit('purchase:created', { purchaseId: newP._id });
+      }
+    } catch (e) { console.warn('socket emit failed', e); }
+
+    return res.json({ ok:true, purchase: newP });
+  } catch (err) {
+    console.error('POST /purchases error', err);
+    return res.status(500).json({ ok:false, error:'Server error' });
+  }
+});
+
+/**
+ * GET /api/purchases
+ * - Admin: returns all (with optional status=checking)
+ * - User: returns user's purchases
+ */
+router.get('/', requireAuth, async (req, res) => {
+  try {
+    const status = req.query.status || null;
+    const page = Math.max(1, parseInt(req.query.page || '1',10));
+    const limit = Math.min(200, parseInt(req.query.limit || '50',10));
+    let query = {};
+    if ((req.user.role||'').toLowerCase() === 'admin') {
+      if (status) query.status = status;
+    } else {
+      query.userId = req.user._id;
+      if (status) query.status = status;
+    }
+    const purchases = await Purchase.find(query).sort({ createdAt: -1 }).skip((page-1)*limit).limit(limit).populate('userId', 'fullname name email').lean().exec();
+    return res.json({ ok:true, purchases });
+  } catch (err) {
+    console.error('GET /purchases error', err);
+    return res.status(500).json({ ok:false, error:'Server error' });
+  }
+});
+
+/**
+ * POST /api/purchases/:id/verify (admin)
+ * body.action = 'prove' or 'unprove'
+ */
+router.post('/:id/verify', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const id = req.params.id;
+    const action = (req.body && req.body.action) || '';
+    const purchase = await Purchase.findById(id).exec();
+    if (!purchase) return res.status(404).json({ ok:false, error:'Not found' });
+
+    if (action === 'prove') {
+      purchase.status = 'verified';
+      purchase.verifiedAt = new Date();
+      purchase.verifiedBy = req.user._id;
+      await purchase.save();
+      // notify user via socket and create a help message
+      const io = req.app && req.app.get && req.app.get('io');
+      if (io) io.to('user:' + String(purchase.userId)).emit('purchase:verified', { id: purchase._id });
+      // create an inbox message for user
+      const msg = new HelpMsg({
+        fromUserId: null,
         toAdmin: false,
-        toUserId: toObjectIdIfPossible(req.user._id),
-        body: `You were enrolled in "${course.title}".`
+        toUserId: purchase.userId,
+        text: `Your payment for "${purchase.courseSnapshot && purchase.courseSnapshot.title}" (${purchase.courseSnapshot && purchase.courseSnapshot.courseId}) has been verified. You now have access.`,
+        read: false
       });
       await msg.save();
-    }
-
-    res.json({ ok:true, purchase: pa });
-  } catch (err) {
-    console.error('POST /purchases', err);
-    res.status(500).json({ ok:false, message:'Server error' });
-  }
-});
-
-/* GET /purchases - admin sees all, user sees own */
-router.get('/', auth, async (req, res) => {
-  try {
-    const isAdmin = String(req.user.role || '').toLowerCase() === 'admin';
-    const page = Math.max(1, parseInt(req.query.page || '1',10));
-    const limit = Math.min(200, Math.max(10, parseInt(req.query.limit || '50',10)));
-    const query = {};
-    if (!isAdmin) {
-      query.userId = toObjectIdIfPossible(req.user._id);
-    } else {
-      if (req.query.status) query.status = req.query.status;
-      if (req.query.courseId) {
-        const cs = await Course.find({ courseId: new RegExp(String(req.query.courseId),'i') }).select('_id').lean().exec();
-        if (cs && cs.length) query.courseId = { $in: cs.map(x=>x._id) };
+      if (io) io.to('user:' + String(purchase.userId)).emit('help:new', msg);
+      // emit checking count update
+      if (io) {
+        const checkingCount = await Purchase.countDocuments({ status: 'checking' }).catch(()=>0);
+        io.emit('notification.checking_count_update', { count: checkingCount });
       }
-    }
-    const total = await PurchaseAttempt.countDocuments(query).exec();
-    const items = await PurchaseAttempt.find(query).sort({ createdAt:-1 }).skip((page-1)*limit).limit(limit)
-      .populate('userId','fullname email')
-      .populate('courseId','courseId title')
-      .lean().exec();
-    res.json({ ok:true, total, page, limit, purchases: items });
-  } catch (err) {
-    console.error('GET /purchases', err);
-    res.status(500).json({ ok:false, message:'Server error' });
-  }
-});
-
-/* POST /purchases/:id/verify - admin verify/unverify */
-router.post('/:id/verify', auth, roles(['admin']), async (req, res) => {
-  try {
-    const pa = await PurchaseAttempt.findById(req.params.id);
-    if (!pa) return res.status(404).json({ ok:false, message:'Not found' });
-    const { action, adminNotes } = req.body || {};
-    if (action === 'prove' || action === 'verified') {
-      if (pa.status === 'verified') return res.json({ ok:true, purchase: pa });
-      pa.status = 'verified';
-      pa.verifiedAt = new Date();
-      pa.verifiedBy = toObjectIdIfPossible(req.user._id);
-      pa.adminNotes = adminNotes || '';
-      await pa.save();
-      // notify user via HelpMessage
-      try {
-        const msg = new HelpMessage({
-          threadId: 'purchase-' + String(pa._id),
-          fromUserId: toObjectIdIfPossible(req.user._id),
-          toAdmin: false,
-          toUserId: toObjectIdIfPossible(pa.userId),
-          body: `Your payment for "${pa.courseSnapshot.title}" (${pa.courseSnapshot.courseId}) has been verified. You now have access.`
-        });
-        await msg.save();
-      } catch (e) { console.warn('notify message failed', e); }
-      return res.json({ ok:true, purchase: pa });
-    } else if (action === 'unprove' || action === 'unproven') {
-      pa.status = 'unproven';
-      pa.adminNotes = adminNotes || '';
-      await pa.save();
-      try {
-        const msg = new HelpMessage({
-          threadId: 'purchase-' + String(pa._id),
-          fromUserId: toObjectIdIfPossible(req.user._id),
-          toAdmin: false,
-          toUserId: toObjectIdIfPossible(pa.userId),
-          body: pa.adminNotes ? `We could not verify your payment: ${pa.adminNotes}` : 'We could not verify your payment. Please re-check and resend evidence.'
-        });
-        await msg.save();
-      } catch (e) { console.warn('notify failed', e); }
-      return res.json({ ok:true, purchase: pa });
+      return res.json({ ok:true, purchase });
+    } else if (action === 'unprove') {
+      purchase.status = 'unproven';
+      purchase.adminNotes = req.body.adminNotes || '';
+      await purchase.save();
+      const io = req.app && req.app.get && req.app.get('io');
+      // message to user
+      const msg = new HelpMsg({
+        fromUserId: null,
+        toAdmin: false,
+        toUserId: purchase.userId,
+        text: `We could not verify your payment for "${purchase.courseSnapshot && purchase.courseSnapshot.title}". Reason: ${purchase.adminNotes || 'Please re-check and resend proof.'}`,
+        read: false
+      });
+      await msg.save();
+      if (io) io.to('user:' + String(purchase.userId)).emit('help:new', msg);
+      if (io) {
+        const checkingCount = await Purchase.countDocuments({ status: 'checking' }).catch(()=>0);
+        io.emit('notification.checking_count_update', { count: checkingCount });
+      }
+      return res.json({ ok:true, purchase });
     } else {
-      return res.status(400).json({ ok:false, message:'Invalid action' });
+      return res.status(400).json({ ok:false, error:'Unknown action' });
     }
   } catch (err) {
-    console.error('POST /purchases/:id/verify', err);
-    res.status(500).json({ ok:false, message:'Server error' });
+    console.error('POST /purchases/:id/verify error', err);
+    return res.status(500).json({ ok:false, error:'Server error' });
   }
 });
 
