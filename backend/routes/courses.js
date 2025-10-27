@@ -8,14 +8,19 @@ const mongoose = require('mongoose');
 const Course = require('../models/Course');
 const Lesson = require('../models/Lesson');
 const Purchase = require('../models/Purchase');
-const HelpMessage = require('../models/HelpMessage');
-const HelpThread = require('../models/HelpThread');
 const User = require('../models/User');
 
-const authMiddleware = require('../middleware/auth'); // exports single middleware function
+let HelpMessage = null;
+let HelpMessageCourse = null;
+let HelpThread = null;
 
-// Use authMiddleware as requireAuth and create small role guard wrapper
+try { HelpMessage = require('../models/HelpMessage'); } catch (e) { HelpMessage = null; }
+try { HelpMessageCourse = require('../models/HelpMessageCourse'); } catch (e) { HelpMessageCourse = null; }
+try { HelpThread = require('../models/HelpThread'); } catch (e) { HelpThread = null; }
+
+const authMiddleware = require('../middleware/auth'); // exports single middleware function
 const requireAuth = authMiddleware;
+
 function requireRole(role) {
   return (req, res, next) => {
     try {
@@ -39,23 +44,48 @@ function computeDiscounted(price = 0, discount = 0) {
 }
 
 // ----------------------
-// GET counts (for badges)
 // GET /api/courses/counts
-// requires auth (so frontend must pass token)
 router.get('/counts', requireAuth, async (req, res) => {
   try {
     const checking = await Purchase.countDocuments({ status: 'checking' }).catch(() => 0);
+
     let help = 0;
     const role = ((req.user && req.user.role) || '').toString().toLowerCase();
-    if (role === 'admin') {
-      // messages directed to admin and unread
-      help = await HelpMessage.countDocuments({ toAdmin: true, read: false }).catch(() => 0);
+
+    // Prefer HelpMessageCourse (broadcast/thread hybrid) if present,
+    // else fallback to HelpMessage (your existing broadcast model).
+    if (HelpMessageCourse) {
+      if (role === 'admin') {
+        // count messages targeted to admin, unread
+        try {
+          help = await HelpMessageCourse.countDocuments({ $or: [{ toAdmin: true }, { toRole: 'admin' }, { broadcastToAll: true }], removed: { $ne: true }, read: false }).catch(()=>0);
+        } catch (e) { help = await HelpMessageCourse.countDocuments({ removed: { $ne: true } }).catch(()=>0); }
+      } else {
+        try {
+          help = await HelpMessageCourse.countDocuments({
+            removed: { $ne: true },
+            read: false,
+            $or: [
+              { toUserId: req.user._id },
+              { toUser: req.user._id },
+              { toUsers: req.user._id },
+              { broadcastToAll: true },
+              { toRole: role }
+            ]
+          }).catch(()=>0);
+        } catch (e) { help = 0; }
+      }
+    } else if (HelpMessage) {
+      // Fallback to older thread-style help messages your app may use
+      if (role === 'admin') {
+        help = await HelpMessage.countDocuments({ toAdmin: true, read: false }).catch(() => 0);
+      } else {
+        help = await HelpMessage.countDocuments({ toUser: req.user._id, read: false }).catch(() => 0);
+      }
     } else {
-      // unread messages for this user (help thread model may vary)
-      help = await HelpMessage.countDocuments({ toUser: req.user._id, read: false }).catch(() => 0);
-      // fallback: support HelpMessageCourse model if used in other parts
-      // (we won't require it here to avoid breakage)
+      help = 0;
     }
+
     return res.json({ ok: true, counts: { checking: Number(checking || 0), help: Number(help || 0) } });
   } catch (err) {
     console.error('GET /courses/counts error', err && (err.stack || err));
@@ -75,7 +105,6 @@ router.get('/categories', async (req, res) => {
     ]).catch(() => []);
     const categories = (cats || []).map(c => c._id).filter(Boolean);
     if (!categories.length) {
-      // preset fallback used by frontend
       return res.json({ ok: true, categories: ['Mobile Repairing', 'Languages', 'Subjects', 'Programming', 'Hacking', 'Business', 'Design'] });
     }
     return res.json({ ok: true, categories });
@@ -87,7 +116,6 @@ router.get('/categories', async (req, res) => {
 
 // ----------------------
 // GET /api/courses
-// supports q, category, price, duration, rating, sort, page, limit
 router.get('/', async (req, res) => {
   try {
     const q = req.query.q ? String(req.query.q).trim() : '';
@@ -167,8 +195,6 @@ router.get('/', async (req, res) => {
 
 // ----------------------
 // GET /api/courses/:id
-// :id can be MongoId or courseId
-// optional query param includeLessons=1
 router.get('/:id', async (req, res) => {
   try {
     const id = req.params.id;
@@ -200,14 +226,6 @@ router.get('/:id', async (req, res) => {
 
 // ----------------------
 // POST /api/courses  (admin)
-/*
-  Body supports:
-    courseId (optional), title (required),
-    teacher (object with { fullname, photo, bio, overview, title }) OR teacherId,
-    isFree, price, discount, duration,
-    thumbnailUrl, media[], categories[] or CSV string,
-    shortDescription, longDescription
-*/
 router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const body = req.body || {};
@@ -219,12 +237,10 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
       newCourseId = 'CRS' + String(count + 1).padStart(5, '0');
     }
 
-    // normalize categories
     let categories = [];
     if (Array.isArray(body.categories)) categories = body.categories.map(String);
     else if (body.categories && typeof body.categories === 'string') categories = body.categories.split(',').map(s => s.trim()).filter(Boolean);
 
-    // teacher object support
     let teacherObj = null;
     if (body.teacher && typeof body.teacher === 'object') {
       teacherObj = {
@@ -261,12 +277,9 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
 
     await doc.save();
 
-    // emit socket event
     try {
       const io = req.app && req.app.get && req.app.get('io');
-      if (io) {
-        io.emit('course:created', { courseId: doc._id, course: doc });
-      }
+      if (io) io.emit('course:created', { courseId: doc._id, course: doc });
     } catch (e) { console.warn('course create emit failed', e); }
 
     return res.json({ ok: true, course: doc });
@@ -291,7 +304,6 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
     if (body.courseId) course.courseId = String(body.courseId).trim();
     if (body.title) course.title = String(body.title).trim();
 
-    // teacher updates
     if (body.teacher && typeof body.teacher === 'object') {
       course.teacher = {
         fullname: body.teacher.fullname || body.teacher.name || (course.teacher && course.teacher.fullname) || '',
@@ -318,7 +330,6 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
 
     await course.save();
 
-    // emit update
     try {
       const io = req.app && req.app.get && req.app.get('io');
       if (io) io.emit('course:updated', { courseId: course._id, course });
@@ -348,7 +359,6 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req, res) => {
     course.deletedBy = req.user._id;
     await course.save();
 
-    // emit delete event
     try {
       const io = req.app && req.app.get && req.app.get('io');
       if (io) io.emit('course:deleted', { courseId: course._id });
@@ -385,7 +395,6 @@ router.post('/:id/restore', requireAuth, requireRole('admin'), async (req, res) 
 
 // ----------------------
 // LESSONS
-// GET /api/courses/:id/lessons
 router.get('/:id/lessons', async (req, res) => {
   try {
     const id = req.params.id;
@@ -402,7 +411,6 @@ router.get('/:id/lessons', async (req, res) => {
   }
 });
 
-// POST /api/courses/:id/lessons  (admin)
 router.post('/:id/lessons', requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const id = req.params.id;
@@ -428,7 +436,6 @@ router.post('/:id/lessons', requireAuth, requireRole('admin'), async (req, res) 
 
     await ls.save();
 
-    // emit lesson created if needed
     try {
       const io = req.app && req.app.get && req.app.get('io');
       if (io) io.emit('course:lesson_created', { courseId: String(course._id), lessonId: ls._id, lesson: ls });
