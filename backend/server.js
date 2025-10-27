@@ -409,6 +409,8 @@ const storiesRouter = require('./routes/stories');
 const coursesRouter = require('./routes/courses');
 const purchasesRouter = require('./routes/purchases');
 
+const notificationsRouter = require('./routes/notifications');
+
 let chatsRouter = null;
 try { chatsRouter = require('./routes/chats'); } catch (e) { /* optional */ }
 
@@ -548,6 +550,8 @@ app.use('/api/developers', developerRoutes);
 app.use('/api/stories', storiesRouter);
 app.use('/api/courses', coursesRouter);
 app.use('/api/purchases', purchasesRouter);
+
+app.use('/api/notifications', notificationsRouter);
 
 // root
 app.get('/', (req, res) => res.json({ ok:true, message:'School Manager API' }));
