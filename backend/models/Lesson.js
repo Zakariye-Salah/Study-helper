@@ -1,3 +1,4 @@
+
 // backend/models/Lesson.js
 'use strict';
 const mongoose = require('mongoose');
