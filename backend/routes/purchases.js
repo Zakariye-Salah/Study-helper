@@ -1,30 +1,36 @@
 // backend/routes/purchases.js
-'use strict';
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
-const Purchase = require('../models/Purchase');
+
+const auth = require('../middleware/auth');
+const roles = require('../middleware/roles');
+
 const Course = require('../models/Course');
-const HelpThread = require('../models/HelpThread');
+const PurchaseAttempt = require('../models/PurchaseAttempt');
 const HelpMessage = require('../models/HelpMessage');
-const { requireAuth, requireRole } = require('../middleware/auth');
 
-// create purchase / enroll
-router.post('/', requireAuth, async (req, res) => {
+/**
+ * POST /api/purchases
+ * Create a purchase attempt (user clicked I paid)
+ * Body: { courseId (course._id or courseId string), provider, enteredPhoneNumber, amount }
+ */
+router.post('/', auth, async (req, res) => {
   try {
-    const body = req.body || {};
-    const courseId = body.courseId;
-    if (!courseId) return res.status(400).json({ ok:false, error:'courseId required' });
+    const { courseId, provider = 'Other', enteredPhoneNumber = '', amount = 0 } = req.body || {};
+    if (!courseId) return res.status(400).json({ ok:false, message: 'courseId required' });
 
-    const course = await Course.findById(courseId).lean().catch(()=>null) || await Course.findOne({ courseId }).lean().catch(()=>null);
-    if (!course) return res.status(404).json({ ok:false, error:'Course not found' });
+    const course = await Course.findOne({ $or: [{ _id: courseId }, { courseId: courseId }] }).lean();
+    if (!course) return res.status(404).json({ ok:false, message: 'Course not found' });
+    if (course.deleted) return res.status(400).json({ ok:false, message: 'Course not available' });
 
-    // free -> immediate verified
+    // if free course -> auto-verify (enroll)
+    const snapshot = { courseIdStr: course.courseId, title: course.title, price: Number(course.price || 0), isFree: !!course.isFree };
     if (course.isFree) {
-      const p = new Purchase({
+      const p = new PurchaseAttempt({
         userId: req.user._id,
         courseId: course._id,
-        courseSnapshot: { courseId: course.courseId, title: course.title, price: 0 },
+        courseSnapshot: snapshot,
         provider: 'Other',
         enteredPhoneNumber: '',
         amount: 0,
@@ -33,159 +39,149 @@ router.post('/', requireAuth, async (req, res) => {
         verifiedBy: req.user._id
       });
       await p.save();
-      // increment buyersCount
-      await Course.findByIdAndUpdate(course._id, { $inc: { buyersCount: 1 } }).catch(()=>{});
-      const io = req.app && req.app.get && req.app.get('io');
-      if (io) io.to('user:' + String(req.user._id)).emit('purchase:verified', { purchaseId: p._id });
+      // send notification to user via socket
+      try {
+        const io = req.app && req.app.get && req.app.get('io');
+        if (io) io.to(String(req.user._id)).emit('purchase:verified', { purchaseId: p._id, courseId: course._id });
+      } catch(e){/*ignore*/}
       return res.json({ ok:true, purchase: p });
     }
 
-    // paid -> create checking
-    const prov = body.provider || 'Other';
-    const phone = body.enteredPhoneNumber || '';
-    const amount = Number(body.amount || course.price || 0);
+    // create checking attempt
+    const price = Number(course.price || 0);
+    const attemptedAmount = Number(amount || price);
 
-    const newP = new Purchase({
+    const purchase = new PurchaseAttempt({
       userId: req.user._id,
       courseId: course._id,
-      courseSnapshot: { courseId: course.courseId, title: course.title, price: course.price || 0 },
-      provider: prov,
-      enteredPhoneNumber: phone,
-      amount: amount,
+      courseSnapshot: snapshot,
+      provider,
+      enteredPhoneNumber: String(enteredPhoneNumber || ''),
+      amount: attemptedAmount,
       status: 'checking'
     });
-    await newP.save();
 
-    // emit checking count update
+    await purchase.save();
+
+    // notify admins via socket (if set)
     try {
       const io = req.app && req.app.get && req.app.get('io');
-      if (io) {
-        const checkingCount = await Purchase.countDocuments({ status: 'checking' }).catch(()=>0);
-        io.emit('notification.checking_count_update', { count: checkingCount });
-        io.emit('purchase:created', { purchaseId: newP._id });
-      }
-    } catch (e) { console.warn('socket emit failed', e); }
+      if (io) io.emit('purchases:new', { purchaseId: purchase._id, course: snapshot, userId: String(req.user._id) });
+    } catch(e){/*ignore*/}
 
-    return res.json({ ok:true, purchase: newP });
+    res.json({ ok:true, purchase });
   } catch (err) {
-    console.error('POST /purchases error', err);
-    return res.status(500).json({ ok:false, error:'Server error' });
+    console.error('POST /purchases', err);
+    res.status(500).json({ ok:false, message: 'Server error' });
   }
 });
 
-// GET /api/purchases
-router.get('/', requireAuth, async (req, res) => {
+/**
+ * GET /api/purchases
+ * Admin: list all purchases (filter by status, search by user or course)
+ * User: list own purchases
+ */
+router.get('/', auth, async (req, res) => {
   try {
-    const status = req.query.status || null;
-    const page = Math.max(1, parseInt(req.query.page || '1',10));
-    const limit = Math.min(200, parseInt(req.query.limit || '50',10));
-    let query = {};
-    if ((req.user.role||'').toLowerCase() === 'admin') {
-      if (status) query.status = status;
-    } else {
-      query.userId = req.user._id;
-      if (status) query.status = status;
+    const requesterRole = (req.user && req.user.role || '').toLowerCase();
+    const isAdmin = requesterRole === 'admin';
+    const status = req.query.status; // optional: checking|verified|unproven
+    const q = {};
+    if (status) q.status = status;
+
+    // search by q (name or courseId)
+    const search = req.query.q || '';
+    if (search && String(search).trim()) {
+      const rx = new RegExp(String(search).trim().replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i');
+      // we will match against courseSnapshot.title (lean) or user fullname by populate later
+      q.$or = [{ 'courseSnapshot.title': rx }, { 'courseSnapshot.courseIdStr': rx }];
     }
-    const purchases = await Purchase.find(query).sort({ createdAt: -1 }).skip((page-1)*limit).limit(limit)
-      .populate('userId', 'fullname name email').lean().exec();
-    return res.json({ ok:true, purchases });
+
+    if (!isAdmin) {
+      q.userId = req.user._id;
+    }
+
+    const items = await PurchaseAttempt.find(q).sort({ createdAt: -1 }).limit(500).lean();
+    return res.json({ ok:true, items });
   } catch (err) {
-    console.error('GET /purchases error', err);
-    return res.status(500).json({ ok:false, error:'Server error' });
+    console.error('GET /purchases', err);
+    res.status(500).json({ ok:false, message: 'Server error' });
   }
 });
 
-// POST /api/purchases/:id/verify (admin)
-router.post('/:id/verify', requireAuth, requireRole('admin'), async (req, res) => {
+/**
+ * POST /api/purchases/:id/verify  (admin)
+ * Body: { action: 'prove'|'unprove', note: 'optional message' }
+ */
+router.post('/:id/verify', auth, roles(['admin']), async (req, res) => {
   try {
     const id = req.params.id;
-    const action = (req.body && req.body.action) || '';
-    const purchase = await Purchase.findById(id).exec();
-    if (!purchase) return res.status(404).json({ ok:false, error:'Not found' });
+    const p = await PurchaseAttempt.findById(id);
+    if (!p) return res.status(404).json({ ok:false, message: 'Purchase not found' });
 
-    const io = req.app && req.app.get && req.app.get('io');
+    const action = String((req.body && req.body.action) || '').toLowerCase();
+    const note = (req.body && req.body.note) || '';
+
+    if (!['prove','unprove'].includes(action)) return res.status(400).json({ ok:false, message: 'Invalid action' });
 
     if (action === 'prove') {
-      purchase.status = 'verified';
-      purchase.verifiedAt = new Date();
-      purchase.verifiedBy = req.user._id;
-      await purchase.save();
-
-      // increment course buyersCount
-      try { await Course.findByIdAndUpdate(purchase.courseId, { $inc: { buyersCount: 1 } }).catch(()=>{}); } catch(e){}
-
-      // notify user
-      if (io) io.to('user:' + String(purchase.userId)).emit('purchase:verified', { id: purchase._id });
-
-      // create or append a help message thread for this notification
-      try {
-        let thread = await HelpThread.findOne({ userId: purchase.userId }).exec();
-        if (!thread) {
-          thread = new HelpThread({ userId: purchase.userId, subject: 'Payment verification' });
-        }
-        thread.lastMessage = `Your payment for "${purchase.courseSnapshot && purchase.courseSnapshot.title}" has been verified.`;
-        thread.unreadForUser = (thread.unreadForUser || 0) + 1;
-        await thread.save();
-
-        const msg = new HelpMessage({
-          threadId: thread._id,
-          fromUserId: null,
-          toAdmin: false,
-          toUserId: purchase.userId,
-          text: `Your payment for "${purchase.courseSnapshot && purchase.courseSnapshot.title}" has been verified. You now have access.`,
-          read: false
-        });
-        await msg.save();
-        if (io) io.to('user:' + String(purchase.userId)).emit('help:new', msg);
-      } catch (e) { console.warn('help message create failed', e); }
-
-      // emit new checking count
-      if (io) {
-        const checkingCount = await Purchase.countDocuments({ status: 'checking' }).catch(()=>0);
-        io.emit('notification.checking_count_update', { count: checkingCount });
+      if (p.status === 'verified') {
+        return res.json({ ok:true, alreadyVerified: true, purchase: p });
       }
+      p.status = 'verified';
+      p.verifiedAt = new Date();
+      p.verifiedBy = req.user._id;
+      p.adminNotes = note || '';
+      await p.save();
 
-      return res.json({ ok:true, purchase });
-    } else if (action === 'unprove') {
-      purchase.status = 'unproven';
-      purchase.adminNotes = req.body.adminNotes || '';
-      await purchase.save();
-
-      // notify user by help message
+      // notify user via HelpMessage and socket
+      const hm = new HelpMessage({
+        fromUserId: req.user._id,
+        toAdmin: false,
+        toUserId: p.userId,
+        body: `Your payment for "${p.courseSnapshot.title}" (${p.courseSnapshot.courseIdStr}) has been verified. You now have access.`
+      });
+      await hm.save();
       try {
-        let thread = await HelpThread.findOne({ userId: purchase.userId }).exec();
-        if (!thread) {
-          thread = new HelpThread({ userId: purchase.userId, subject: 'Payment verification' });
+        const io = req.app && req.app.get && req.app.get('io');
+        if (io) {
+          io.to(String(p.userId)).emit('purchase:verified', { purchaseId: p._id, courseId: p.courseId });
+          io.to(String(p.userId)).emit('help:new', { messageId: hm._id, body: hm.body });
         }
-        thread.lastMessage = `Payment could not be verified: ${purchase.adminNotes || ''}`;
-        thread.unreadForUser = (thread.unreadForUser || 0) + 1;
-        await thread.save();
+      } catch(e){/*ignore*/}
 
-        const msg = new HelpMessage({
-          threadId: thread._id,
-          fromUserId: null,
-          toAdmin: false,
-          toUserId: purchase.userId,
-          text: `We could not verify your payment. Reason: ${purchase.adminNotes || 'Please re-check and resend proof.'}`,
-          read: false
-        });
-        await msg.save();
-        if (io) io.to('user:' + String(purchase.userId)).emit('help:new', msg);
-      } catch (e) { console.warn('help message create failed', e); }
-
-      if (io) {
-        const checkingCount = await Purchase.countDocuments({ status: 'checking' }).catch(()=>0);
-        io.emit('notification.checking_count_update', { count: checkingCount });
-      }
-
-      return res.json({ ok:true, purchase });
+      return res.json({ ok:true, purchase: p });
     } else {
-      return res.status(400).json({ ok:false, error:'Unknown action' });
+      // unprove
+      p.status = 'unproven';
+      p.adminNotes = note || '';
+      p.verifiedAt = new Date();
+      p.verifiedBy = req.user._id;
+      await p.save();
+
+      const hm = new HelpMessage({
+        fromUserId: req.user._id,
+        toAdmin: false,
+        toUserId: p.userId,
+        body: note || `We could not verify your payment for "${p.courseSnapshot.title}". Please re-check and resend proof or contact support.`
+      });
+      await hm.save();
+      try {
+        const io = req.app && req.app.get && req.app.get('io');
+        if (io) {
+          io.to(String(p.userId)).emit('purchase:unproven', { purchaseId: p._id });
+          io.to(String(p.userId)).emit('help:new', { messageId: hm._id, body: hm.body });
+        }
+      } catch(e){/*ignore*/}
+
+      return res.json({ ok:true, purchase: p });
     }
   } catch (err) {
-    console.error('POST /purchases/:id/verify error', err);
-    return res.status(500).json({ ok:false, error:'Server error' });
+    console.error('POST /purchases/:id/verify', err);
+    res.status(500).json({ ok:false, message: 'Server error' });
   }
 });
 
 module.exports = router;
+
+
