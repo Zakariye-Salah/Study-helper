@@ -246,7 +246,6 @@
 // });
 
 // module.exports = router;
-
 // backend/routes/courses.js
 const express = require('express');
 const mongoose = require('mongoose');
@@ -335,6 +334,24 @@ router.get('/categories', auth, async (req, res) => {
   }
 });
 
+
+/* POST /api/courses/:id/increase  (admin) */
+router.post('/:id/increase', auth, roles(['admin']), async (req, res) => {
+  try {
+    const id = req.params.id;
+    const add = Number(req.body.add || req.query.add || 0);
+    if (!add || add <= 0) return res.status(400).json({ ok:false, message:'add number required and > 0' });
+
+    const course = await Course.findById(id);
+    if (!course) return res.status(404).json({ ok:false, message:'Course not found' });
+    course.marketingProvenCount = Number(course.marketingProvenCount || 0) + add;
+    await course.save();
+    return res.json({ ok:true, updated: true, course });
+  } catch (err) {
+    console.error('POST /courses/:id/increase', err);
+    return res.status(500).json({ ok:false, message:'Server error' });
+  }
+});
 /**
  * GET /api/courses/:id
  */
