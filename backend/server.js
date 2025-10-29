@@ -412,9 +412,9 @@ const notificationsRouter = require('./routes/notifications');
 const helpmsgsRouter = require('./routes/helpmsgs');
 const recycleCourse = require('./routes/recycleCourse');
 
-const lessonsRouters = require('./routes/lessons')
-const ratingsRouters = require('./routes/ratings');
-const commentsRouters =require('./routes/comments');
+// const lessonsRouters = require('./routes/lessons')
+// const ratingsRouters = require('./routes/ratings');
+// const commentsRouters =require('./routes/comments');
 const uploadsRouter =require('./routes/uploads');
 
 // serve upload API (multipart / JSON upload handler)
@@ -558,13 +558,13 @@ app.use('/api/developers', developerRoutes);
 app.use('/api/stories', storiesRouter);
 
 app.use('/api/courses',coursesRouter);
-app.use('/api/lessons', lessonsRouters);
+// app.use('/api/lessons', lessonsRouters);
 app.use('/api/purchases', purchasesRouter);
 app.use('/api/helpmsgs', helpmsgsRouter );
 app.use('/api/recycle', recycleCourse);
 app.use('/api/notifications', notificationsRouter);
-app.use('/api/ratings',ratingsRouters );
-app.use('/api/comments' , commentsRouters );
+// app.use('/api/ratings',ratingsRouters );
+// app.use('/api/comments' , commentsRouters );
 
 app.use('/api/uploads', uploadsRouter);
 
