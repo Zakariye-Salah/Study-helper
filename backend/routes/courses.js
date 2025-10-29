@@ -456,43 +456,45 @@ router.post('/:id/increase', auth, roles(['admin']), async (req, res) => {
 });
 /**
  * GET /api/courses/:id
- */
-// router.get('/:id', auth, async (req, res) => {
-//   try {
-//     const id = req.params.id;
-//     // allow lookup by _id or courseId string
-//     const course = await Course.findOne({ $or: [{ _id: id }, { courseId: id }] }).lean().exec();
-//     if (!course || course.deleted) return res.status(404).json({ ok: false, message: 'Course not found' });
-//     return res.json({ ok: true, course });
-//   } catch (err) {
-//     console.error('GET /courses/:id', err);
-//     return res.status(500).json({ ok: false, message: 'Server error' });
-//   }
-// });
-
-
-/**
- * GET /api/courses/:id
- * Query: include=lessons  -> if set, include lessons array: { ok:true, course, lessons: [...] }
+ * optional query: ?include=lessons
  */
 router.get('/:id', auth, async (req, res) => {
   try {
     const id = req.params.id;
-    const include = (req.query.include || '').toLowerCase();
-
     // allow lookup by _id or courseId string
     const course = await Course.findOne({ $or: [{ _id: id }, { courseId: id }] }).lean().exec();
     if (!course || course.deleted) return res.status(404).json({ ok: false, message: 'Course not found' });
 
-    // optionally include lessons to make the frontend refresh atomic
+    // optionally include lessons
+    const include = String(req.query.include || '').toLowerCase();
     if (include === 'lessons') {
       try {
         const lessons = await Lesson.find({ courseId: course._id, deleted: { $ne: true } }).sort({ createdAt: 1 }).lean();
+        // attach as separate field (so frontend checks r.lessons) and also include inside course.lessons (fallback)
+        course.lessons = lessons;
+        console.debug && console.debug(`[courses] GET ${id} include=lessons -> ${lessons.length} lessons`);
         return res.json({ ok: true, course, lessons });
-      } catch (err) {
-        console.warn('GET /courses/:id include=lessons failed to load lessons', err && err.message);
-        // fallthrough to return course only
+      } catch (e) {
+        console.warn('GET /courses/:id include=lessons failed', e);
+        // fallthrough to return course without lessons
       }
+    }
+
+    // Optionally: attach rating aggregation for convenience (if RatingModel exists)
+    try {
+      if (RatingModel) {
+        const agg = await RatingModel.aggregate([
+          { $match: { courseId: mongoose.Types.ObjectId(String(course._id)) } },
+          { $group: { _id: '$courseId', avg: { $avg: '$stars' }, count: { $sum: 1 } } }
+        ]).limit(1);
+        if (agg && agg[0]) {
+          course.ratingAvg = Number(agg[0].avg) || null;
+          course.ratingCount = Number(agg[0].count) || 0;
+        }
+      }
+    } catch (e) {
+      // ignore aggregation errors
+      console.warn('rating aggregation failed', e && e.message);
     }
 
     return res.json({ ok: true, course });
@@ -501,6 +503,7 @@ router.get('/:id', auth, async (req, res) => {
     return res.status(500).json({ ok: false, message: 'Server error' });
   }
 });
+
 
 /**
  * POST /api/courses  (admin only)
@@ -713,7 +716,7 @@ router.post('/:id/lessons', auth, roles(['admin']), async (req, res) => {
 
     const ls = new Lesson({
       courseId: course._id,
-      title: String(body.title),
+      title: body.title,
       duration: body.duration || '',
       preview: !!body.preview,
       mediaUrl: body.mediaUrl || '',
@@ -722,34 +725,20 @@ router.post('/:id/lessons', auth, roles(['admin']), async (req, res) => {
       notes: body.notes || '',
       createdBy: toObjectIdIfPossible(req.user._id)
     });
-
     await ls.save();
 
-    // if preview, ensure course.previewLessonIds contains it
+    // if preview, add to course.previewLessonIds
     if (ls.preview) {
-      try {
-        if (!Array.isArray(course.previewLessonIds)) course.previewLessonIds = [];
-        const exists = (course.previewLessonIds || []).some(x => String(x) === String(ls._id));
-        if (!exists) {
-          course.previewLessonIds.push(ls._id);
-          await course.save();
-        }
-      } catch (e) {
-        console.warn('Failed to update course.previewLessonIds after creating lesson', e && e.message);
+      const idStr = ls._id;
+      if (!course.previewLessonIds) course.previewLessonIds = [];
+      const exists = (course.previewLessonIds || []).some(x => String(x) === String(idStr));
+      if (!exists) {
+        course.previewLessonIds.push(ls._id);
+        await course.save();
       }
     }
 
-    // Try to return the updated lesson list so the frontend can refresh reliably.
-    let lessons = null;
-    try {
-      lessons = await Lesson.find({ courseId: course._id, deleted: { $ne: true } }).sort({ createdAt: 1 }).lean();
-    } catch (e) {
-      // ignore; we'll still return the new lesson
-      console.warn('Could not load lessons list after save', e && e.message);
-    }
-
-    // Return saved lesson and optionally lessons array + courseId for frontend convenience
-    return res.json({ ok:true, lesson: ls, course: { _id: course._id, courseId: course.courseId, ratingAvg: course.ratingAvg, ratingCount: course.ratingCount }, lessons });
+    return res.json({ ok:true, lesson: ls });
   } catch (err) {
     console.error('POST /courses/:id/lessons', err);
     return res.status(500).json({ ok:false, message:'Server error' });
