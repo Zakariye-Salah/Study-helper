@@ -372,6 +372,7 @@ function toObjectIdIfPossible(id) {
 }
 
 
+
 /**
  * GET /api/courses
  * Query params: q, category, filter=all|free|fee, sort=newest|price_asc|price_desc, page, limit
@@ -688,14 +689,14 @@ router.get('/:id/lessons', auth, async (req, res) => {
 /**
  * GET /api/courses/:id/lessons/:lid
  */
-router.get('/:id/lessons/:lid', auth, async (req, res) => {
+router.get('/:id', auth, async (req, res) => {
   try {
-    const lid = req.params.lid;
-    const lesson = await Lesson.findById(lid).lean();
-    if (!lesson || lesson.deleted) return res.status(404).json({ ok:false, message:'Lesson not found' });
-    return res.json({ ok:true, lesson });
+    const id = req.params.id;
+    const l = await Lesson.findById(id).lean();
+    if (!l || l.deleted) return res.status(404).json({ ok:false, message:'Lesson not found' });
+    return res.json({ ok:true, lesson: l });
   } catch (err) {
-    console.error('GET /courses/:id/lessons/:lid', err);
+    console.error('GET /lessons/:id', err);
     return res.status(500).json({ ok:false, message:'Server error' });
   }
 });
@@ -705,34 +706,32 @@ router.get('/:id/lessons/:lid', auth, async (req, res) => {
  * Accepts JSON body: { title, duration, preview, mediaUrl, notes, media: [] }
  * If mediaUrl provided but no media array, we put a single media entry (type guessed by extension)
  */
-router.post('/:id/lessons', auth, roles(['admin']), async (req, res) => {
+router.post('/', auth, roles(['admin']), async (req, res) => {
   try {
-    const cid = req.params.id;
-    const course = await Course.findOne({ $or: [{ _id: cid }, { courseId: cid }] });
-    if (!course) return res.status(404).json({ ok:false, message:'Course not found' });
-
     const body = req.body || {};
+    if (!body.courseId) return res.status(400).json({ ok:false, message:'courseId required' });
     if (!body.title) return res.status(400).json({ ok:false, message:'title required' });
+
+    const course = await Course.findOne({ $or: [{ _id: body.courseId }, { courseId: body.courseId }] });
+    if (!course) return res.status(404).json({ ok:false, message:'Course not found' });
 
     const ls = new Lesson({
       courseId: course._id,
-      title: body.title,
+      title: String(body.title).trim(),
       duration: body.duration || '',
       preview: !!body.preview,
       mediaUrl: body.mediaUrl || '',
       media: Array.isArray(body.media) ? body.media : (body.mediaUrl ? [{ type: (body.mediaType||'video'), url: body.mediaUrl, title: body.title }] : []),
-      exercises: Array.isArray(body.exercises) ? body.exercises : [],
       notes: body.notes || '',
+      exercises: Array.isArray(body.exercises) ? body.exercises : [],
       createdBy: toObjectIdIfPossible(req.user._id)
     });
     await ls.save();
 
-    // if preview, add to course.previewLessonIds
+    // if preview: ensure course.previewLessonIds sticks
     if (ls.preview) {
-      const idStr = ls._id;
-      if (!course.previewLessonIds) course.previewLessonIds = [];
-      const exists = (course.previewLessonIds || []).some(x => String(x) === String(idStr));
-      if (!exists) {
+      if (!Array.isArray(course.previewLessonIds)) course.previewLessonIds = [];
+      if (!course.previewLessonIds.some(x => String(x) === String(ls._id))) {
         course.previewLessonIds.push(ls._id);
         await course.save();
       }
@@ -740,28 +739,29 @@ router.post('/:id/lessons', auth, roles(['admin']), async (req, res) => {
 
     return res.json({ ok:true, lesson: ls });
   } catch (err) {
-    console.error('POST /courses/:id/lessons', err);
+    console.error('POST /lessons', err);
     return res.status(500).json({ ok:false, message:'Server error' });
   }
 });
+
 
 /**
  * PUT /api/courses/:id/lessons/:lid  (admin)
  * update lesson basic fields
  */
-router.put('/:id/lessons/:lid', auth, roles(['admin']), async (req, res) => {
+router.put('/:id', auth, roles(['admin']), async (req, res) => {
   try {
-    const lid = req.params.lid;
+    const id = req.params.id;
     const body = req.body || {};
-    const ls = await Lesson.findById(lid);
-    if (!ls) return res.status(404).json({ ok:false, message:'Lesson not found' });
+    const ls = await Lesson.findById(id);
+    if (!ls || ls.deleted) return res.status(404).json({ ok:false, message:'Lesson not found' });
 
     const upable = ['title','duration','preview','mediaUrl','media','notes','exercises'];
     upable.forEach(k => { if (typeof body[k] !== 'undefined') ls[k] = body[k]; });
     ls.updatedBy = toObjectIdIfPossible(req.user._id);
     await ls.save();
 
-    // if preview changed, try to keep course.previewLessonIds consistent
+    // try to keep course.previewLessonIds consistent as before
     if (typeof body.preview !== 'undefined') {
       const course = await Course.findById(ls.courseId);
       if (course) {
@@ -781,30 +781,56 @@ router.put('/:id/lessons/:lid', auth, roles(['admin']), async (req, res) => {
 
     return res.json({ ok:true, lesson: ls });
   } catch (err) {
-    console.error('PUT /courses/:id/lessons/:lid', err);
+    console.error('PUT /lessons/:id', err);
     return res.status(500).json({ ok:false, message:'Server error' });
   }
 });
 
 /**
- * DELETE /api/courses/:id/lessons/:lid (admin) - soft delete lesson
+ * DELETE /api/lessons/:id  (admin) - soft delete
  */
-router.delete('/:id/lessons/:lid', auth, roles(['admin']), async (req, res) => {
+router.delete('/:id', auth, roles(['admin']), async (req, res) => {
   try {
-    const lid = req.params.lid;
-    const ls = await Lesson.findById(lid);
+    const id = req.params.id;
+    const ls = await Lesson.findById(id);
     if (!ls) return res.status(404).json({ ok:false, message:'Lesson not found' });
     ls.deleted = true;
     await ls.save();
-    // remove from previewLessonIds
+
+    // remove from course.previewLessonIds
     const course = await Course.findById(ls.courseId);
     if (course) {
-      course.previewLessonIds = (course.previewLessonIds || []).filter(x => String(x) !== String(lid));
+      course.previewLessonIds = (course.previewLessonIds || []).filter(x => String(x) !== String(id));
       await course.save();
     }
+
     return res.json({ ok:true, deleted:true });
   } catch (err) {
-    console.error('DELETE /courses/:id/lessons/:lid', err);
+    console.error('DELETE /lessons/:id', err);
+    return res.status(500).json({ ok:false, message:'Server error' });
+  }
+});
+
+/**
+ * POST /api/lessons/:id/media  (admin)
+ * body: { url, type, title }  -> push to lesson.media
+ */
+router.post('/:id/media', auth, roles(['admin']), async (req, res) => {
+  try {
+    const id = req.params.id;
+    const body = req.body || {};
+    if (!body.url) return res.status(400).json({ ok:false, message:'url required' });
+    const ls = await Lesson.findById(id);
+    if (!ls) return res.status(404).json({ ok:false, message:'Lesson not found' });
+    const item = { url: body.url, type: body.type || 'video', title: body.title || '' };
+    ls.media = ls.media || [];
+    ls.media.push(item);
+    // keep mediaUrl in sync
+    if (!ls.mediaUrl) ls.mediaUrl = item.url;
+    await ls.save();
+    return res.json({ ok:true, mediaItem: item, lesson: ls });
+  } catch (err) {
+    console.error('POST /lessons/:id/media', err);
     return res.status(500).json({ ok:false, message:'Server error' });
   }
 });
