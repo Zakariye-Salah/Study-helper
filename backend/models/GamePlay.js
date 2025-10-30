@@ -14,7 +14,7 @@ const GamePlaySchema = new Schema({
   competitionId: { type: Schema.Types.ObjectId, ref: 'Competition', default: null, index: true },
   participantId: { type: Schema.Types.ObjectId, ref: 'CompetitionParticipant', default: null },
   studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  gameId: { type: Schema.Types.ObjectId, ref: 'Game', required: true, index: true },
+  gameId: { type: Schema.Types.ObjectId, ref: 'Games', required: true, index: true },
   questions: [ QuestionAnswerSchema ],
   sessionPoints: { type: Number, default: 0 },
   isCompetitive: { type: Boolean, default: true },
