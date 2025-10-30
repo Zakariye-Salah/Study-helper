@@ -1,4 +1,4 @@
-// backend/routes/gamesPlays.js
+/// backend/routes/gamesPlays.js
 'use strict';
 const express = require('express');
 const router = express.Router();
