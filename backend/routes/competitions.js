@@ -3,14 +3,16 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
-
-// small local requireAuth / requireAdmin (copy of pattern used elsewhere)
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'secret';
+
+// simple auth helpers — copy of pattern used elsewhere in your app
 function requireAuth(req, res, next) {
   try {
     const auth = req.headers.authorization || req.headers.Authorization;
-    const token = auth && typeof auth === 'string' && auth.split(' ')[0] === 'Bearer' ? auth.split(' ')[1] : (req.body && req.body.token) || null;
+    const token = auth && typeof auth === 'string' && auth.split(' ')[0] === 'Bearer'
+      ? auth.split(' ')[1]
+      : (req.body && req.body.token) || null;
     if (!token) return res.status(401).json({ ok:false, error:'Authentication required' });
     jwt.verify(token, JWT_SECRET, (err, payload) => {
       if (err) return res.status(401).json({ ok:false, error:'Invalid token' });
@@ -18,7 +20,7 @@ function requireAuth(req, res, next) {
       next();
     });
   } catch (err) {
-    console.error('requireAuth error', err);
+    console.error('requireAuth error', err && (err.stack || err));
     return res.status(401).json({ ok:false, error:'Auth error' });
   }
 }
@@ -26,22 +28,20 @@ function requireAdmin(req, res, next) {
   if (!req.user) return res.status(403).json({ ok:false, error:'Not allowed' });
   const role = (req.user.role || '').toLowerCase();
   if (role !== 'admin') return res.status(403).json({ ok:false, error:'Admin only' });
-  next();
+  return next();
 }
 
 // safe model import (idempotent)
 let Competition, CompetitionParticipant;
 try {
-  const compModels = require('../models/Competition'); // expects module to export {Competition, CompetitionParticipant} or a single model
+  const compModels = require('../models/Competition');
   Competition = compModels.Competition || compModels;
   CompetitionParticipant = compModels.CompetitionParticipant || (mongoose.models.CompetitionParticipant || null);
 } catch (e) {
-  // fallback: try to require by name if model defined elsewhere
   Competition = mongoose.models.Competition;
   CompetitionParticipant = mongoose.models.CompetitionParticipant;
 }
 
-// If models still missing, create minimal schemas (defensive)
 if (!Competition) {
   const { Schema } = mongoose;
   const CompetitionSchema = new Schema({
@@ -68,7 +68,6 @@ if (!CompetitionParticipant) {
   CompetitionParticipant = mongoose.models.CompetitionParticipant || mongoose.model('CompetitionParticipant', CompetitionParticipantSchema);
 }
 
-// helpers
 function parseIsoOrNull(v) {
   if (!v) return null;
   const d = new Date(v);
@@ -76,41 +75,69 @@ function parseIsoOrNull(v) {
   return d;
 }
 
-// list competitions (admin or public)
-router.get('/', requireAuth, async (req, res) => {
+// ---------- public: list competitions ----------
+router.get('/', async (req, res) => {
   try {
-    // optional ?all=true to include deleted
     const includeDeleted = String(req.query.all || 'false') === 'true';
     const filter = includeDeleted ? {} : { deleted: false };
     const rows = await Competition.find(filter).sort({ startAt: -1, createdAt: -1 }).lean();
     return res.json({ ok:true, data: rows });
   } catch (err) {
-    console.error('GET /competitions error', err && err.stack || err);
-    return res.status(500).json({ ok:false, error: 'Server error' });
-  }
-});
-
-// create competition (admin)
-router.post('/', requireAuth, requireAdmin, async (req, res) => {
-  try {
-    const { name, description } = req.body;
-    const start = req.body.startAt || req.body.start || null;
-    const end = req.body.endAt || req.body.end || null;
-    if (!name) return res.status(400).json({ ok:false, error: 'Name required' });
-    const startAt = parseIsoOrNull(start);
-    const endAt = parseIsoOrNull(end);
-    const doc = new Competition({ name: String(name).trim(), description: description || '', startAt, endAt, createdBy: req.user._id });
-    await doc.save();
-    return res.json({ ok:true, competition: doc });
-  } catch (err) {
-    console.error('POST /competitions error', err && err.stack || err);
+    console.error('GET /competitions error', err && (err.stack || err));
     return res.status(500).json({ ok:false, error:'Server error' });
   }
 });
 
-// update competition (admin)
+// ---------- public: get current active competition ----------
+router.get('/current', async (req, res) => {
+  try {
+    const now = new Date();
+    const current = await Competition.findOne({ deleted: false, startAt: { $lte: now }, endAt: { $gte: now } }).lean();
+    if (!current) return res.status(404).json({ ok:false, error: 'No active competition' });
+    return res.json({ ok:true, competition: current });
+  } catch (err) {
+    console.error('GET /competitions/current error', err && (err.stack || err));
+    return res.status(500).json({ ok:false, error:'Server error' });
+  }
+});
+
+// ---------- public: get competition by id ----------
+router.get('/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ ok:false, error:'Invalid id' });
+    const doc = await Competition.findById(id).lean();
+    if (!doc) return res.status(404).json({ ok:false, error:'Not found' });
+    return res.json({ ok:true, competition: doc });
+  } catch (err) {
+    console.error('GET /competitions/:id error', err && (err.stack || err));
+    return res.status(500).json({ ok:false, error:'Server error' });
+  }
+});
+
+// ---------- admin: create ----------
+router.post('/', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    console.log('POST /api/competitions body=', req.body, 'user=', req.user && (req.user._id || req.user.id || req.user));
+    const { name, description } = req.body;
+    const start = req.body.startAt || req.body.start || null;
+    const end = req.body.endAt || req.body.end || null;
+    if (!name) return res.status(400).json({ ok:false, error:'Name required' });
+    const startAt = parseIsoOrNull(start);
+    const endAt = parseIsoOrNull(end);
+    const doc = new Competition({ name: String(name).trim(), description: description || '', startAt, endAt, createdBy: req.user && (req.user._id || req.user.id || null) });
+    await doc.save();
+    return res.json({ ok:true, competition: doc });
+  } catch (err) {
+    console.error('POST /competitions error', err && (err.stack || err));
+    return res.status(500).json({ ok:false, error:'Server error' });
+  }
+});
+
+// ---------- admin: update ----------
 router.put('/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
+    console.log('PUT /api/competitions/:id body=', req.body, 'user=', req.user && (req.user._id || req.user.id || req.user));
     const id = req.params.id;
     const upd = {};
     ['name','description'].forEach(k => { if (typeof req.body[k] !== 'undefined') upd[k] = req.body[k]; });
@@ -121,30 +148,27 @@ router.put('/:id', requireAuth, requireAdmin, async (req, res) => {
     if (!updated) return res.status(404).json({ ok:false, error:'Not found' });
     return res.json({ ok:true, competition: updated });
   } catch (err) {
-    console.error('PUT /competitions/:id error', err && err.stack || err);
+    console.error('PUT /competitions/:id error', err && (err.stack || err));
     return res.status(500).json({ ok:false, error:'Server error' });
   }
 });
 
-// soft delete
+// ---------- admin: soft delete ----------
 router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const id = req.params.id;
-    await Competition.findByIdAndUpdate(id, { $set: { deleted: true, updatedAt: new Date() } });
+    await Competition.findByIdAndUpdate(req.params.id, { $set: { deleted: true, updatedAt: new Date() } });
     return res.json({ ok:true });
   } catch (err) {
-    console.error('DELETE /competitions/:id error', err && err.stack || err);
+    console.error('DELETE /competitions/:id error', err && (err.stack || err));
     return res.status(500).json({ ok:false, error:'Server error' });
   }
 });
 
-// leaderboard for a competition id
-router.get('/:id/leaderboard', requireAuth, async (req, res) => {
+// ---------- public: leaderboard for competition id ----------
+router.get('/:id/leaderboard', async (req, res) => {
   try {
-    const id = req.params.id;
-    // special keyword 'current' -> pick active competition where now between startAt..endAt
-    let competitionId = id;
-    if (id === 'current') {
+    let competitionId = req.params.id;
+    if (competitionId === 'current') {
       const now = new Date();
       const current = await Competition.findOne({ deleted: false, startAt: { $lte: now }, endAt: { $gte: now } }).lean();
       if (!current) return res.status(404).json({ ok:false, error: 'No active competition' });
@@ -154,13 +178,13 @@ router.get('/:id/leaderboard', requireAuth, async (req, res) => {
     const rows = await CompetitionParticipant.find({ competitionId }).sort({ totalPoints: -1 }).limit(limit).lean();
     return res.json({ ok:true, data: rows });
   } catch (err) {
-    console.error('GET /competitions/:id/leaderboard error', err && err.stack || err);
+    console.error('GET /competitions/:id/leaderboard error', err && (err.stack || err));
     return res.status(500).json({ ok:false, error:'Server error' });
   }
 });
 
-// fallback route: /competitions/leaderboard -> try active competition
-router.get('/leaderboard', requireAuth, async (req, res) => {
+// ---------- public: fallback leaderboard (active competition) ----------
+router.get('/leaderboard', async (req, res) => {
   try {
     const now = new Date();
     const current = await Competition.findOne({ deleted: false, startAt: { $lte: now }, endAt: { $gte: now } }).lean();
@@ -169,9 +193,10 @@ router.get('/leaderboard', requireAuth, async (req, res) => {
     const rows = await CompetitionParticipant.find({ competitionId: current._id }).sort({ totalPoints: -1 }).limit(limit).lean();
     return res.json({ ok:true, data: rows, competitionId: current._id });
   } catch (err) {
-    console.error('GET /competitions/leaderboard error', err && err.stack || err);
+    console.error('GET /competitions/leaderboard error', err && (err.stack || err));
     return res.status(500).json({ ok:false, error:'Server error' });
   }
 });
 
 module.exports = router;
+
