@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 
-// auth helpers
+// --- auth helpers (unchanged) ---
 function requireAuth(req, res, next) {
   try {
     const auth = req.headers.authorization || req.headers.Authorization;
@@ -31,7 +31,7 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-// safe model import
+// --- models (safe/idempotent) ---
 let Competition, CompetitionParticipant;
 try {
   const compModels = require('../models/Competition');
@@ -42,7 +42,6 @@ try {
   CompetitionParticipant = mongoose.models.CompetitionParticipant;
 }
 
-// if the models weren't registered, define them (idempotent)
 if (!Competition) {
   const { Schema } = mongoose;
   const CompetitionSchema = new Schema({
@@ -78,12 +77,14 @@ router.use((req, res, next) => {
   next();
 });
 
+// dev error helper — returns stack in non-production
 function devError(res, tag, err){
   console.error(tag, err && (err.stack || err));
   if (process.env.NODE_ENV === 'production') {
     return res.status(500).json({ ok:false, error:'Server error' });
   }
-  return res.status(500).json({ ok:false, error: err && (err.message || String(err)), stack: err && err.stack });
+  // include name/message/stack for debugging
+  return res.status(500).json({ ok:false, error: err && (err.message || String(err)), name: err && err.name, stack: err && err.stack });
 }
 
 function parseIsoOrNull(v) {
@@ -93,7 +94,7 @@ function parseIsoOrNull(v) {
   return d;
 }
 
-// ---------- list competitions ----------
+// --- public list ---
 router.get('/', async (req, res) => {
   try {
     const includeDeleted = String(req.query.all || 'false') === 'true';
@@ -105,7 +106,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ---------- get current active competition (return null instead of 404) ----------
+// --- current active ---
 router.get('/current', async (req, res) => {
   try {
     const now = new Date();
@@ -116,7 +117,7 @@ router.get('/current', async (req, res) => {
   }
 });
 
-// ---------- fallback leaderboard (active competition) ----------
+// --- leaderboard fallback ---
 router.get('/leaderboard', async (req, res) => {
   try {
     const now = new Date();
@@ -130,7 +131,7 @@ router.get('/leaderboard', async (req, res) => {
   }
 });
 
-// ---------- leaderboard for competition id (supports id==='current') ----------
+// --- leaderboard by id ---
 router.get('/:id/leaderboard', async (req, res) => {
   try {
     let competitionId = req.params.id;
@@ -148,7 +149,7 @@ router.get('/:id/leaderboard', async (req, res) => {
   }
 });
 
-// ---------- get competition by id ----------
+// --- get by id ---
 router.get('/:id', async (req, res) => {
   try {
     const id = req.params.id;
@@ -161,7 +162,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// ---------- admin: create ----------
+// --- create (admin) ---
 router.post('/', requireAuth, requireAdmin, async (req, res) => {
   try {
     console.log('POST /api/competitions body=', req.body, 'user=', req.user && (req.user._id || req.user.id || req.user));
@@ -173,20 +174,17 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
     const startAt = parseIsoOrNull(start);
     const endAt = parseIsoOrNull(end);
 
-    // validate dates (if both provided)
     if (startAt && endAt && startAt > endAt) {
       return res.status(400).json({ ok:false, error: 'startAt must be before endAt' });
     }
 
-    // compute safe createdBy (only if valid ObjectId)
+    // safe createBy - only set if valid ObjectId
     let createdBy = null;
     try {
-      const maybe = req.user && (req.user._id || req.user.id || null);
+      const maybe = req.user && (req.user._id || req.user.id || req.user);
       if (maybe && mongoose.Types.ObjectId.isValid(String(maybe))) {
         createdBy = mongoose.Types.ObjectId(String(maybe));
-      } else {
-        createdBy = null;
-      }
+      } else createdBy = null;
     } catch (e) {
       createdBy = null;
     }
@@ -199,14 +197,24 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
       createdBy
     });
 
-    await doc.save();
+    try {
+      await doc.save();
+    } catch (saveErr) {
+      // handle mongoose validation / cast errors explicitly
+      console.error('Competition save failed', saveErr && (saveErr.stack || saveErr));
+      if (saveErr && (saveErr.name === 'ValidationError' || saveErr.name === 'CastError')) {
+        return res.status(400).json({ ok:false, error: saveErr.message, name: saveErr.name, details: saveErr.errors || null });
+      }
+      throw saveErr;
+    }
+
     return res.json({ ok:true, competition: doc });
   } catch (err) {
     return devError(res, 'POST /competitions error', err);
   }
 });
 
-// ---------- admin: update ----------
+// --- update (admin) ---
 router.put('/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     console.log('PUT /api/competitions/:id body=', req.body, 'user=', req.user && (req.user._id || req.user.id || req.user));
@@ -218,7 +226,7 @@ router.put('/:id', requireAuth, requireAdmin, async (req, res) => {
     if (req.body.endAt || req.body.end) upd.endAt = parseIsoOrNull(req.body.endAt || req.body.end);
     if (upd.startAt && upd.endAt && upd.startAt > upd.endAt) return res.status(400).json({ ok:false, error:'startAt must be before endAt' });
     upd.updatedAt = new Date();
-    const updated = await Competition.findByIdAndUpdate(id, { $set: upd }, { new: true }).lean();
+    const updated = await Competition.findByIdAndUpdate(id, { $set: upd }, { new: true, runValidators: true }).lean();
     if (!updated) return res.status(404).json({ ok:false, error:'Not found' });
     return res.json({ ok:true, competition: updated });
   } catch (err) {
@@ -226,7 +234,7 @@ router.put('/:id', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-// ---------- admin: soft delete ----------
+// --- delete (admin) ---
 router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const id = req.params.id;
