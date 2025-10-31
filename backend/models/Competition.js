@@ -10,6 +10,8 @@ const { Schema } = mongoose;
 
 const CompetitionSchema = new Schema({
   name: { type: String, required: true, trim: true },
+  // allow older clients to use title
+  title: { type: String, default: '' },
   description: { type: String, default: '' },
   startAt: { type: Date, default: null },
   endAt: { type: Date, default: null },
@@ -18,7 +20,7 @@ const CompetitionSchema = new Schema({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
-CompetitionSchema.index({ name: 'text' });
+CompetitionSchema.index({ name: 'text', title: 'text' });
 
 const CompetitionParticipantSchema = new Schema({
   competitionId: { type: Schema.Types.ObjectId, ref: 'Competition', required: true, index: true },
@@ -29,7 +31,6 @@ const CompetitionParticipantSchema = new Schema({
 });
 CompetitionParticipantSchema.index({ competitionId: 1, totalPoints: -1 });
 
-// Idempotent model export — avoid OverwriteModelError
 const Competition = mongoose.models.Competition || mongoose.model('Competition', CompetitionSchema);
 const CompetitionParticipant = mongoose.models.CompetitionParticipant || mongoose.model('CompetitionParticipant', CompetitionParticipantSchema);
 
