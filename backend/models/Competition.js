@@ -1,4 +1,4 @@
-// backend/models/Competition.js
+// File: backend/models/Competition.js
 'use strict';
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
@@ -6,6 +6,7 @@ const { Schema } = mongoose;
 /**
  * Competition + CompetitionParticipant models
  * Use safe (idempotent) model registration to avoid OverwriteModelError
+ * Also export a shared helper activeCompetitionQuery(now) so routes can reuse the logic.
  */
 
 const CompetitionSchema = new Schema({
@@ -31,7 +32,19 @@ const CompetitionParticipantSchema = new Schema({
 });
 CompetitionParticipantSchema.index({ competitionId: 1, totalPoints: -1 });
 
+// Idempotent registration
 const Competition = mongoose.models.Competition || mongoose.model('Competition', CompetitionSchema);
 const CompetitionParticipant = mongoose.models.CompetitionParticipant || mongoose.model('CompetitionParticipant', CompetitionParticipantSchema);
 
-module.exports = { Competition, CompetitionParticipant };
+// Helper query used by routes to find an "active" competition. Treats null startAt as already started and null endAt as no end.
+function activeCompetitionQuery(now = new Date()) {
+  return {
+    deleted: false,
+    $and: [
+      { $or: [ { startAt: { $lte: now } }, { startAt: null } ] },
+      { $or: [ { endAt: { $gte: now } }, { endAt: null } ] }
+    ]
+  };
+}
+
+module.exports = { Competition, CompetitionParticipant, activeCompetitionQuery };
