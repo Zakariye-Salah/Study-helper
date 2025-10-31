@@ -42,10 +42,13 @@ try {
   CompetitionParticipant = mongoose.models.CompetitionParticipant;
 }
 
+// If not registered already, create idempotent models
 if (!Competition) {
   const { Schema } = mongoose;
   const CompetitionSchema = new Schema({
+    // keep canonical "name" but allow older code to have "title" too
     name: { type: String, required: true, trim: true },
+    title: { type: String }, // optional duplicate to support mixed clients
     description: { type: String, default: '' },
     startAt: { type: Date, default: null },
     endAt: { type: Date, default: null },
@@ -54,6 +57,8 @@ if (!Competition) {
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now }
   });
+  // text index on name/title for search convenience
+  CompetitionSchema.index({ name: 'text', title: 'text' });
   Competition = mongoose.models.Competition || mongoose.model('Competition', CompetitionSchema);
 }
 if (!CompetitionParticipant) {
@@ -83,7 +88,6 @@ function devError(res, tag, err){
   if (process.env.NODE_ENV === 'production') {
     return res.status(500).json({ ok:false, error:'Server error' });
   }
-  // include name/message/stack for debugging
   return res.status(500).json({ ok:false, error: err && (err.message || String(err)), name: err && err.name, stack: err && err.stack });
 }
 
@@ -94,7 +98,28 @@ function parseIsoOrNull(v) {
   return d;
 }
 
-// --- public list ---
+// Temporary debug endpoint — remove after debugging
+router.get('/__debug/schema', (req, res) => {
+  try {
+    const names = mongoose.modelNames();
+    const out = { modelNames: names };
+    if (names.indexOf('Competition') !== -1) {
+      const M = mongoose.model('Competition');
+      out.competitionSchemaPaths = Object.keys(M.schema.paths).reduce((acc, k) => {
+        acc[k] = {
+          instance: M.schema.paths[k].instance,
+          options: M.schema.paths[k].options || {}
+        };
+        return acc;
+      }, {});
+    }
+    return res.json({ ok:true, debug: out });
+  } catch (err) {
+    return res.status(500).json({ ok:false, error: err && err.message });
+  }
+});
+
+// --- list competitions ---
 router.get('/', async (req, res) => {
   try {
     const includeDeleted = String(req.query.all || 'false') === 'true';
@@ -106,7 +131,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// --- current active ---
+// --- get current active ---
 router.get('/current', async (req, res) => {
   try {
     const now = new Date();
@@ -117,7 +142,7 @@ router.get('/current', async (req, res) => {
   }
 });
 
-// --- leaderboard fallback ---
+// --- fallback leaderboard ---
 router.get('/leaderboard', async (req, res) => {
   try {
     const now = new Date();
@@ -166,10 +191,13 @@ router.get('/:id', async (req, res) => {
 router.post('/', requireAuth, requireAdmin, async (req, res) => {
   try {
     console.log('POST /api/competitions body=', req.body, 'user=', req.user && (req.user._id || req.user.id || req.user));
-    const { name, description } = req.body;
+    // accept either 'name' or 'title' (map to canonical name)
+    const payloadName = (req.body.name || req.body.title || '').trim();
+    const description = req.body.description || '';
     const start = req.body.startAt || req.body.start || null;
     const end = req.body.endAt || req.body.end || null;
-    if (!name) return res.status(400).json({ ok:false, error: 'Name required' });
+
+    if (!payloadName) return res.status(400).json({ ok:false, error: 'Name (or title) required' });
 
     const startAt = parseIsoOrNull(start);
     const endAt = parseIsoOrNull(end);
@@ -178,19 +206,21 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
       return res.status(400).json({ ok:false, error: 'startAt must be before endAt' });
     }
 
-    // safe createBy - only set if valid ObjectId
+    // safe createdBy
     let createdBy = null;
     try {
-      const maybe = req.user && (req.user._id || req.user.id || req.user);
+      const maybe = req.user && (req.user._id || req.user.id || null);
       if (maybe && mongoose.Types.ObjectId.isValid(String(maybe))) {
         createdBy = mongoose.Types.ObjectId(String(maybe));
-      } else createdBy = null;
+      }
     } catch (e) {
       createdBy = null;
     }
 
     const doc = new Competition({
-      name: String(name).trim(),
+      // fill both for compatibility
+      name: payloadName,
+      title: payloadName,
       description: description || '',
       startAt,
       endAt,
@@ -200,7 +230,6 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
     try {
       await doc.save();
     } catch (saveErr) {
-      // handle mongoose validation / cast errors explicitly
       console.error('Competition save failed', saveErr && (saveErr.stack || saveErr));
       if (saveErr && (saveErr.name === 'ValidationError' || saveErr.name === 'CastError')) {
         return res.status(400).json({ ok:false, error: saveErr.message, name: saveErr.name, details: saveErr.errors || null });
@@ -220,12 +249,20 @@ router.put('/:id', requireAuth, requireAdmin, async (req, res) => {
     console.log('PUT /api/competitions/:id body=', req.body, 'user=', req.user && (req.user._id || req.user.id || req.user));
     const id = req.params.id;
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ ok:false, error:'Invalid id' });
+
     const upd = {};
-    ['name','description'].forEach(k => { if (typeof req.body[k] !== 'undefined') upd[k] = req.body[k]; });
+    // accept name or title and set both for compatibility
+    if (typeof req.body.name !== 'undefined' || typeof req.body.title !== 'undefined') {
+      const nm = (req.body.name || req.body.title || '').trim();
+      if (nm) { upd.name = nm; upd.title = nm; }
+      else { upd.name = ''; upd.title = ''; }
+    }
+    ['description'].forEach(k => { if (typeof req.body[k] !== 'undefined') upd[k] = req.body[k]; });
     if (req.body.startAt || req.body.start) upd.startAt = parseIsoOrNull(req.body.startAt || req.body.start);
     if (req.body.endAt || req.body.end) upd.endAt = parseIsoOrNull(req.body.endAt || req.body.end);
     if (upd.startAt && upd.endAt && upd.startAt > upd.endAt) return res.status(400).json({ ok:false, error:'startAt must be before endAt' });
     upd.updatedAt = new Date();
+
     const updated = await Competition.findByIdAndUpdate(id, { $set: upd }, { new: true, runValidators: true }).lean();
     if (!updated) return res.status(404).json({ ok:false, error:'Not found' });
     return res.json({ ok:true, competition: updated });
@@ -247,4 +284,3 @@ router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
 });
 
 module.exports = router;
-
