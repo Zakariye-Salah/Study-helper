@@ -1,4 +1,4 @@
-/// backend/models/GamePlay.js
+// backend/models/GamePlay.js
 'use strict';
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
@@ -17,7 +17,8 @@ const GamePlaySchema = new Schema({
   gameId: { type: Schema.Types.ObjectId, ref: 'Games', required: true, index: true },
   questions: [ QuestionAnswerSchema ],
   sessionPoints: { type: Number, default: 0 },
-  isCompetitive: { type: Boolean, default: true },
+  // safer default: not assume competitive unless explicitly set
+  isCompetitive: { type: Boolean, default: false },
   startedAt: { type: Date, default: Date.now },
   endedAt: { type: Date, default: null },
   cancelled: { type: Boolean, default: false },
@@ -27,6 +28,7 @@ const GamePlaySchema = new Schema({
 
 GamePlaySchema.index({ studentId: 1, startedAt: -1 });
 
-const GamePlay = mongoose.model('GamePlay', GamePlaySchema);
+const GamePlay = mongoose.models.GamePlay || mongoose.model('GamePlay', GamePlaySchema);
 
 module.exports = GamePlay;
+
