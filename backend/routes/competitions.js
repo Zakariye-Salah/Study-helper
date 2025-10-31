@@ -46,9 +46,9 @@ try {
 if (!Competition) {
   const { Schema } = mongoose;
   const CompetitionSchema = new Schema({
-    // keep canonical "name" but allow older code to have "title" too
+    // support both name and title for backward compatibility
     name: { type: String, required: true, trim: true },
-    title: { type: String }, // optional duplicate to support mixed clients
+    title: { type: String },
     description: { type: String, default: '' },
     startAt: { type: Date, default: null },
     endAt: { type: Date, default: null },
@@ -57,7 +57,6 @@ if (!Competition) {
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now }
   });
-  // text index on name/title for search convenience
   CompetitionSchema.index({ name: 'text', title: 'text' });
   Competition = mongoose.models.Competition || mongoose.model('Competition', CompetitionSchema);
 }
@@ -191,7 +190,6 @@ router.get('/:id', async (req, res) => {
 router.post('/', requireAuth, requireAdmin, async (req, res) => {
   try {
     console.log('POST /api/competitions body=', req.body, 'user=', req.user && (req.user._id || req.user.id || req.user));
-    // accept either 'name' or 'title' (map to canonical name)
     const payloadName = (req.body.name || req.body.title || '').trim();
     const description = req.body.description || '';
     const start = req.body.startAt || req.body.start || null;
@@ -206,7 +204,6 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
       return res.status(400).json({ ok:false, error: 'startAt must be before endAt' });
     }
 
-    // safe createdBy
     let createdBy = null;
     try {
       const maybe = req.user && (req.user._id || req.user.id || null);
@@ -218,7 +215,6 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
     }
 
     const doc = new Competition({
-      // fill both for compatibility
       name: payloadName,
       title: payloadName,
       description: description || '',
@@ -229,6 +225,15 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
 
     try {
       await doc.save();
+      // Emit socket update if io available (app should set io = ioInstance on app)
+      try {
+        const io = req.app && req.app.get && req.app.get('io');
+        if (io && typeof io.emit === 'function') {
+          io.emit('competition:updated', { competitionId: String(doc._id), startAt: doc.startAt, endAt: doc.endAt, name: doc.name });
+        }
+      } catch (e) {
+        console.warn('competition emit failed', e && e.message);
+      }
     } catch (saveErr) {
       console.error('Competition save failed', saveErr && (saveErr.stack || saveErr));
       if (saveErr && (saveErr.name === 'ValidationError' || saveErr.name === 'CastError')) {
@@ -251,7 +256,6 @@ router.put('/:id', requireAuth, requireAdmin, async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ ok:false, error:'Invalid id' });
 
     const upd = {};
-    // accept name or title and set both for compatibility
     if (typeof req.body.name !== 'undefined' || typeof req.body.title !== 'undefined') {
       const nm = (req.body.name || req.body.title || '').trim();
       if (nm) { upd.name = nm; upd.title = nm; }
@@ -265,6 +269,17 @@ router.put('/:id', requireAuth, requireAdmin, async (req, res) => {
 
     const updated = await Competition.findByIdAndUpdate(id, { $set: upd }, { new: true, runValidators: true }).lean();
     if (!updated) return res.status(404).json({ ok:false, error:'Not found' });
+
+    // emit socket update
+    try {
+      const io = req.app && req.app.get && req.app.get('io');
+      if (io && typeof io.emit === 'function') {
+        io.emit('competition:updated', { competitionId: String(updated._id), startAt: updated.startAt, endAt: updated.endAt, name: updated.name });
+      }
+    } catch (e) {
+      console.warn('competition emit failed', e && e.message);
+    }
+
     return res.json({ ok:true, competition: updated });
   } catch (err) {
     return devError(res, 'PUT /competitions/:id error', err);
@@ -277,6 +292,13 @@ router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
     const id = req.params.id;
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ ok:false, error:'Invalid id' });
     await Competition.findByIdAndUpdate(id, { $set: { deleted: true, updatedAt: new Date() } });
+    // emit updated (so clients can refresh)
+    try {
+      const io = req.app && req.app.get && req.app.get('io');
+      if (io && typeof io.emit === 'function') {
+        io.emit('competition:updated', { competitionId: id, deleted: true });
+      }
+    } catch (e) {}
     return res.json({ ok:true });
   } catch (err) {
     return devError(res, 'DELETE /competitions/:id error', err);
@@ -284,3 +306,4 @@ router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
 });
 
 module.exports = router;
+
