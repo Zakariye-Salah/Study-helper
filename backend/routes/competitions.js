@@ -1,5 +1,4 @@
-
-// File: backend/routes/competitions.js
+// backend/routes/competitions.js  (IMPROVED)
 'use strict';
 const express = require('express');
 const router = express.Router();
@@ -20,7 +19,7 @@ try {
   activeCompetitionQuery = null;
 }
 
-// Auth helpers
+// Auth helpers (unchanged)
 function requireAuth(req, res, next) {
   try {
     const auth = req.headers.authorization || req.headers.Authorization;
@@ -61,10 +60,27 @@ function parseIsoOrNull(v) {
   return d;
 }
 
-// safe helper that returns a query to find the active competition
+/**
+ * Default duration used if endAt is not given.
+ * Can be overridden by env COMP_DEFAULT_DURATION_MS (milliseconds).
+ * Fallback default: 24 hours
+ */
+const DEFAULT_DURATION_MS = Number(process.env.COMP_DEFAULT_DURATION_MS || 24 * 60 * 60 * 1000);
+
+/**
+ * getActiveCompetition(now)
+ * Returns a promise resolving to the active competition (or null).
+ * Active logic:
+ *  - deleted must be false
+ *  - startAt is either null OR <= now
+ *  - endAt is either null OR >= now
+ * This treats null startAt as "already started" and null endAt as "no end".
+ */
 function getActiveCompetition(now = new Date()) {
-  if (activeCompetitionQuery) return Competition.findOne(activeCompetitionQuery(now)).sort({ startAt: -1, createdAt: -1 }).lean();
-  // fallback to previous behavior but accept null start/end
+  if (activeCompetitionQuery) {
+    // if model provides custom query builder (optional)
+    return Competition.findOne(activeCompetitionQuery(now)).sort({ startAt: -1, createdAt: -1 }).lean();
+  }
   return Competition.findOne({
     deleted: false,
     $and: [
@@ -76,10 +92,13 @@ function getActiveCompetition(now = new Date()) {
 
 console.log('[DEBUG] competitions router loaded');
 
+// simple request logger
 router.use((req, res, next) => {
   try {
     console.log('[competitions] %s %s - query=%o body=%o auth=%s', req.method, req.originalUrl || req.url, req.query, req.body, !!req.headers.authorization);
-  } catch (e) { console.log('[competitions] log error', e && e.stack); }
+  } catch (e) {
+    console.log('[competitions] log error', e && e.stack);
+  }
   next();
 });
 
@@ -104,8 +123,7 @@ router.get('/__debug/schema', (req, res) => {
   }
 });
 
-// --- list competitions ---
-// supports ?all=true to include deleted, ?limit & ?skip for pagination, ?search=text
+// --- list competitions --- (supports pagination + search)
 router.get('/', async (req, res) => {
   try {
     const includeDeleted = String(req.query.all || 'false') === 'true';
@@ -129,13 +147,19 @@ router.get('/current', async (req, res) => {
   try {
     const now = new Date();
     const current = await getActiveCompetition(now);
+    // helpful debug info when not found
+    if (!current) {
+      console.log('[competitions] current: none found at', now.toISOString());
+    } else {
+      console.log('[competitions] current:', current._id, current.name, 'startAt=', current.startAt, 'endAt=', current.endAt);
+    }
     return res.json({ ok:true, competition: current || null });
   } catch (err) {
     return devError(res, 'GET /competitions/current error', err);
   }
 });
 
-// --- fallback leaderboard ---
+// --- fallback leaderboard (uses the active competition) ---
 router.get('/leaderboard', async (req, res) => {
   try {
     const now = new Date();
@@ -160,7 +184,7 @@ router.get('/:id/leaderboard', async (req, res) => {
       competitionId = String(current._id);
     }
 
-    // permit passing an ObjectId or a string id
+    // allow plain string ids that are valid ObjectIds
     if (!mongoose.Types.ObjectId.isValid(competitionId)) return res.status(400).json({ ok:false, error:'Invalid competition id' });
     const limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
     const rows = await CompetitionParticipant.find({ competitionId }).sort({ totalPoints: -1 }).limit(limit).lean();
@@ -183,11 +207,35 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+/**
+ * Helper to normalise start/end dates and apply sensible defaults:
+ * - If neither startAt nor endAt provided: set startAt = now, endAt = now + DEFAULT_DURATION_MS
+ * - If startAt provided and endAt not provided: set endAt = startAt + DEFAULT_DURATION_MS
+ * - If endAt provided and startAt not provided: keep startAt null (means "already started")
+ */
+function normalizeDatesForCreate(start, end) {
+  let startAt = parseIsoOrNull(start);
+  let endAt = parseIsoOrNull(end);
+
+  if (!startAt && !endAt) {
+    startAt = new Date();
+    endAt = new Date(startAt.getTime() + DEFAULT_DURATION_MS);
+  } else if (startAt && !endAt) {
+    endAt = new Date(startAt.getTime() + DEFAULT_DURATION_MS);
+  } else if (!startAt && endAt) {
+    // keep startAt null -> treated as started already
+    startAt = null;
+  }
+  return { startAt, endAt };
+}
+
 // --- create (admin) ---
-// If no startAt/endAt provided and COMP_DEFAULT_DURATION_MS env var set, set start=now and end=start+duration
+// If you want to test quickly WITHOUT JWT, enable a temporary test route by setting
+// ALLOW_NOAUTH_COMP_CREATION=true in your env. The test route is below and also requires the env flag.
 router.post('/', requireAuth, requireAdmin, async (req, res) => {
   try {
     console.log('POST /api/competitions body=', req.body, 'user=', req.user && (req.user._id || req.user.id || req.user));
+
     const payloadName = (req.body.name || req.body.title || '').trim();
     const description = req.body.description || '';
     const start = req.body.startAt || req.body.start || null;
@@ -195,15 +243,7 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
 
     if (!payloadName) return res.status(400).json({ ok:false, error: 'Name (or title) required' });
 
-    let startAt = parseIsoOrNull(start);
-    let endAt = parseIsoOrNull(end);
-
-    // If both missing and env default provided, set sensible defaults
-    const defaultDurationMs = Number(process.env.COMP_DEFAULT_DURATION_MS || 0);
-    if (!startAt && !endAt && defaultDurationMs > 0) {
-      startAt = new Date();
-      endAt = new Date(startAt.getTime() + defaultDurationMs);
-    }
+    const { startAt, endAt } = normalizeDatesForCreate(start, end);
 
     if (startAt && endAt && startAt > endAt) {
       return res.status(400).json({ ok:false, error: 'startAt must be before endAt' });
@@ -230,8 +270,7 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
 
     try {
       await doc.save();
-
-      // Emit socket update if io available (app should set io = ioInstance on app)
+      // emit socket update if io exists
       try {
         const io = req.app && req.app.get && req.app.get('io');
         if (io && typeof io.emit === 'function') {
@@ -255,6 +294,32 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+/**
+ * TEMP: create without auth for quick testing (only enabled when ALLOW_NOAUTH_COMP_CREATION=true).
+ * This is intentionally guarded — do NOT enable on public production servers.
+ */
+if (String(process.env.ALLOW_NOAUTH_COMP_CREATION || '').toLowerCase() === 'true') {
+  router.post('/__test-create-noauth', async (req, res) => {
+    try {
+      const payloadName = (req.body.name || req.body.title || '').trim();
+      const description = req.body.description || '';
+      const start = req.body.startAt || req.body.start || null;
+      const end = req.body.endAt || req.body.end || null;
+
+      if (!payloadName) return res.status(400).json({ ok:false, error: 'Name (or title) required' });
+
+      const { startAt, endAt } = normalizeDatesForCreate(start, end);
+      const doc = new Competition({ name: payloadName, title: payloadName, description, startAt, endAt, createdBy: null });
+      await doc.save();
+      console.log('[competitions] __test-create-noauth created', doc._id, 'startAt=', startAt, 'endAt=', endAt);
+      return res.json({ ok:true, competition: doc });
+    } catch (err) {
+      return devError(res, 'POST /competitions/__test-create-noauth error', err);
+    }
+  });
+  console.log('[competitions] __test-create-noauth route enabled (ALLOW_NOAUTH_COMP_CREATION=true)');
+}
+
 // --- update (admin) ---
 router.put('/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -269,9 +334,16 @@ router.put('/:id', requireAuth, requireAdmin, async (req, res) => {
       else { upd.name = ''; upd.title = ''; }
     }
     ['description'].forEach(k => { if (typeof req.body[k] !== 'undefined') upd[k] = req.body[k]; });
+
     if (req.body.startAt || req.body.start) upd.startAt = parseIsoOrNull(req.body.startAt || req.body.start);
     if (req.body.endAt || req.body.end) upd.endAt = parseIsoOrNull(req.body.endAt || req.body.end);
     if (upd.startAt && upd.endAt && upd.startAt > upd.endAt) return res.status(400).json({ ok:false, error:'startAt must be before endAt' });
+
+    // automatic fallback: if start provided but end missing, set default end
+    if (upd.startAt && !upd.endAt && !req.body.endAt && !req.body.end) {
+      upd.endAt = new Date(upd.startAt.getTime() + DEFAULT_DURATION_MS);
+    }
+
     upd.updatedAt = new Date();
 
     const updated = await Competition.findByIdAndUpdate(id, { $set: upd }, { new: true, runValidators: true }).lean();
