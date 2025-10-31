@@ -80,19 +80,129 @@ router.get('/', async (req, res) => {
   } catch(err) { return devError(res, 'GET /competitions', err); }
 });
 
-// current (active)
+// --- get current active (defensive) ---
 router.get('/current', async (req, res) => {
   try {
     const now = new Date();
-    const active = await Competition.findActive(now);
+    let active = null;
+
+    // Defensive: if model provides helper, use it; otherwise fallback to explicit query
+    try {
+      if (Competition && typeof Competition.findActive === 'function') {
+        active = await Competition.findActive(now);
+      } else {
+        active = await Competition.findOne({
+          deleted: false,
+          $and: [
+            { $or: [{ startAt: { $lte: now } }, { startAt: null }] },
+            { $or: [{ endAt: { $gte: now } }, { endAt: null }] }
+          ]
+        }).sort({ startAt: -1, createdAt: -1 }).lean();
+      }
+    } catch (innerErr) {
+      // Log inner error and try one more safer fallback
+      console.error('[competitions] findActive inner error', innerErr && (innerErr.stack || innerErr));
+      try {
+        active = await Competition.findOne({ deleted: false }).sort({ startAt: -1, createdAt: -1 }).lean();
+      } catch (fallbackErr) {
+        console.error('[competitions] findActive fallback also failed', fallbackErr && (fallbackErr.stack || fallbackErr));
+        // Return helpful 500 payload with message (not full stack in prod)
+        return res.status(500).json({ ok:false, error:'Server error finding active competition', detail: String(fallbackErr && fallbackErr.message) });
+      }
+    }
+
     if (!active) {
       console.log('[competitions] current - none found at', now.toISOString());
     } else {
-      console.log('[competitions] current ->', active._id, active.name, active.startAt, active.endAt);
+      console.log('[competitions] current ->', active._id || active.id, active.name, 'startAt=', active.startAt, 'endAt=', active.endAt);
     }
     return res.json({ ok:true, competition: active || null });
-  } catch(err){ return devError(res, 'GET /competitions/current', err); }
+  } catch (err) {
+    console.error('GET /competitions/current error', err && (err.stack || err));
+    return res.status(500).json({ ok:false, error:'Server error', detail: String(err && err.message) });
+  }
 });
+
+// --- leaderboard fallback (defensive) ---
+router.get('/leaderboard', async (req, res) => {
+  try {
+    const now = new Date();
+    let active = null;
+    try {
+      if (Competition && typeof Competition.findActive === 'function') active = await Competition.findActive(now);
+      else active = await Competition.findOne({
+        deleted: false,
+        $and: [
+          { $or: [{ startAt: { $lte: now } }, { startAt: null }] },
+          { $or: [{ endAt: { $gte: now } }, { endAt: null }] }
+        ]
+      }).sort({ startAt: -1, createdAt: -1 }).lean();
+    } catch(innerErr){
+      console.error('[competitions] leaderboard findActive inner error', innerErr && (innerErr.stack || innerErr));
+      return res.status(500).json({ ok:false, error:'Server error computing active competition for leaderboard', detail: String(innerErr && innerErr.message) });
+    }
+
+    if (!active) return res.json({ ok:true, data: [], competitionId: null });
+
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
+    // Defensive: ensure CompetitionParticipant exists
+    if (!CompetitionParticipant) {
+      console.error('[competitions] CompetitionParticipant model is undefined');
+      return res.status(500).json({ ok:false, error:'Server misconfiguration: CompetitionParticipant missing' });
+    }
+
+    const rows = await CompetitionParticipant.find({ competitionId: active._id }).sort({ totalPoints: -1 }).limit(limit).lean();
+    return res.json({ ok:true, data: rows, competitionId: active._id });
+  } catch (err) {
+    console.error('GET /competitions/leaderboard error', err && (err.stack || err));
+    return res.status(500).json({ ok:false, error:'Server error', detail: String(err && err.message) });
+  }
+});
+
+// --- leaderboard by id (defensive) ---
+router.get('/:id/leaderboard', async (req, res) => {
+  try {
+    let competitionId = req.params.id;
+    if (competitionId === 'current') {
+      try {
+        const now = new Date();
+        if (Competition && typeof Competition.findActive === 'function') {
+          const current = await Competition.findActive(now);
+          if (!current) return res.json({ ok:true, data: [], competitionId: null });
+          competitionId = String(current._id);
+        } else {
+          const current = await Competition.findOne({
+            deleted: false,
+            $and: [
+              { $or: [{ startAt: { $lte: new Date() } }, { startAt: null }] },
+              { $or: [{ endAt: { $gte: new Date() } }, { endAt: null }] }
+            ]
+          }).sort({ startAt: -1, createdAt: -1 }).lean();
+          if (!current) return res.json({ ok:true, data: [], competitionId: null });
+          competitionId = String(current._id);
+        }
+      } catch (e) {
+        console.error('[competitions] /current -> leaderboard lookup error', e && (e.stack || e));
+        return res.status(500).json({ ok:false, error:'Server error resolving current competition', detail: String(e && e.message) });
+      }
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(competitionId)) return res.status(400).json({ ok:false, error:'Invalid competition id' });
+
+    if (!CompetitionParticipant) {
+      console.error('[competitions] CompetitionParticipant model undefined in :id/leaderboard');
+      return res.status(500).json({ ok:false, error:'Server misconfiguration: CompetitionParticipant missing' });
+    }
+
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
+    const rows = await CompetitionParticipant.find({ competitionId }).sort({ totalPoints: -1 }).limit(limit).lean();
+    return res.json({ ok:true, data: rows });
+  } catch (err) {
+    console.error('GET /competitions/:id/leaderboard error', err && (err.stack || err));
+    return res.status(500).json({ ok:false, error:'Server error', detail: String(err && err.message) });
+  }
+});
+
 
 // upcoming (next X)
 router.get('/upcoming', async (req, res) => {
@@ -116,32 +226,7 @@ router.get('/active-or-upcoming', async (req, res) => {
 });
 
 // leaderboard fallback (active)
-router.get('/leaderboard', async (req, res) => {
-  try {
-    const now = new Date();
-    const active = await Competition.findActive(now);
-    if (!active) return res.json({ ok:true, data: [], competitionId: null });
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
-    const rows = await CompetitionParticipant.find({ competitionId: active._id }).sort({ totalPoints: -1 }).limit(limit).lean();
-    return res.json({ ok:true, data: rows, competitionId: active._id });
-  } catch(err){ return devError(res, 'GET /competitions/leaderboard', err); }
-});
 
-// leaderboard by id
-router.get('/:id/leaderboard', async (req, res) => {
-  try {
-    let competitionId = req.params.id;
-    if (competitionId === 'current') {
-      const active = await Competition.findActive(new Date());
-      if (!active) return res.json({ ok:true, data: [], competitionId: null });
-      competitionId = String(active._id);
-    }
-    if (!mongoose.Types.ObjectId.isValid(competitionId)) return res.status(400).json({ ok:false, error:'Invalid competition id' });
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
-    const rows = await CompetitionParticipant.find({ competitionId }).sort({ totalPoints: -1 }).limit(limit).lean();
-    return res.json({ ok:true, data: rows });
-  } catch(err){ return devError(res, 'GET /competitions/:id/leaderboard', err); }
-});
 
 // get by id
 router.get('/:id', async (req, res) => {
@@ -328,4 +413,3 @@ router.post('/:id/participants/points', requireAuth, async (req, res) => {
 });
 
 module.exports = router;
-
