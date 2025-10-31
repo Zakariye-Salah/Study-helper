@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 
-// simple auth helpers — copy of pattern used elsewhere in your app
+// auth helpers
 function requireAuth(req, res, next) {
   try {
     const auth = req.headers.authorization || req.headers.Authorization;
@@ -31,7 +31,7 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-// safe model import (idempotent)
+// safe model import
 let Competition, CompetitionParticipant;
 try {
   const compModels = require('../models/Competition');
@@ -42,6 +42,7 @@ try {
   CompetitionParticipant = mongoose.models.CompetitionParticipant;
 }
 
+// if the models weren't registered, define them (idempotent)
 if (!Competition) {
   const { Schema } = mongoose;
   const CompetitionSchema = new Schema({
@@ -68,7 +69,6 @@ if (!CompetitionParticipant) {
   CompetitionParticipant = mongoose.models.CompetitionParticipant || mongoose.model('CompetitionParticipant', CompetitionParticipantSchema);
 }
 
-// ---------- dev helpers ----------
 console.log('[DEBUG] competitions router loaded');
 
 router.use((req, res, next) => {
@@ -93,7 +93,7 @@ function parseIsoOrNull(v) {
   return d;
 }
 
-// ---------- public: list competitions ----------
+// ---------- list competitions ----------
 router.get('/', async (req, res) => {
   try {
     const includeDeleted = String(req.query.all || 'false') === 'true';
@@ -105,8 +105,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ---------- public: get current active competition ----------
-// returns ok:true + competition:null if none (safer for caller than 404)
+// ---------- get current active competition (return null instead of 404) ----------
 router.get('/current', async (req, res) => {
   try {
     const now = new Date();
@@ -117,16 +116,12 @@ router.get('/current', async (req, res) => {
   }
 });
 
-// ---------- public: fallback leaderboard (active competition) ----------
-// placed BEFORE ':id' route to avoid accidental capture
+// ---------- fallback leaderboard (active competition) ----------
 router.get('/leaderboard', async (req, res) => {
   try {
     const now = new Date();
     const current = await Competition.findOne({ deleted: false, startAt: { $lte: now }, endAt: { $gte: now } }).lean();
-    if (!current) {
-      // return empty leaderboard instead of 404 so frontend can render gracefully
-      return res.json({ ok:true, data: [], competitionId: null });
-    }
+    if (!current) return res.json({ ok:true, data: [], competitionId: null });
     const limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
     const rows = await CompetitionParticipant.find({ competitionId: current._id }).sort({ totalPoints: -1 }).limit(limit).lean();
     return res.json({ ok:true, data: rows, competitionId: current._id });
@@ -135,7 +130,7 @@ router.get('/leaderboard', async (req, res) => {
   }
 });
 
-// ---------- public: leaderboard for competition id (supports id==='current') ----------
+// ---------- leaderboard for competition id (supports id==='current') ----------
 router.get('/:id/leaderboard', async (req, res) => {
   try {
     let competitionId = req.params.id;
@@ -145,7 +140,6 @@ router.get('/:id/leaderboard', async (req, res) => {
       if (!current) return res.json({ ok:true, data: [], competitionId: null });
       competitionId = current._id;
     }
-    // allow string ids too; Mongoose will accept string ObjectId and cast
     const limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
     const rows = await CompetitionParticipant.find({ competitionId }).sort({ totalPoints: -1 }).limit(limit).lean();
     return res.json({ ok:true, data: rows });
@@ -154,12 +148,10 @@ router.get('/:id/leaderboard', async (req, res) => {
   }
 });
 
-// ---------- public: get competition by id ----------
-// keep after leaderboard routes so '/leaderboard' isn't matched as :id
+// ---------- get competition by id ----------
 router.get('/:id', async (req, res) => {
   try {
     const id = req.params.id;
-    // validate; support 'current' special-case already above
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ ok:false, error:'Invalid id' });
     const doc = await Competition.findById(id).lean();
     if (!doc) return res.status(404).json({ ok:false, error:'Not found' });
@@ -177,9 +169,36 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
     const start = req.body.startAt || req.body.start || null;
     const end = req.body.endAt || req.body.end || null;
     if (!name) return res.status(400).json({ ok:false, error: 'Name required' });
+
     const startAt = parseIsoOrNull(start);
     const endAt = parseIsoOrNull(end);
-    const doc = new Competition({ name: String(name).trim(), description: description || '', startAt, endAt, createdBy: req.user && (req.user._id || req.user.id || null) });
+
+    // validate dates (if both provided)
+    if (startAt && endAt && startAt > endAt) {
+      return res.status(400).json({ ok:false, error: 'startAt must be before endAt' });
+    }
+
+    // compute safe createdBy (only if valid ObjectId)
+    let createdBy = null;
+    try {
+      const maybe = req.user && (req.user._id || req.user.id || null);
+      if (maybe && mongoose.Types.ObjectId.isValid(String(maybe))) {
+        createdBy = mongoose.Types.ObjectId(String(maybe));
+      } else {
+        createdBy = null;
+      }
+    } catch (e) {
+      createdBy = null;
+    }
+
+    const doc = new Competition({
+      name: String(name).trim(),
+      description: description || '',
+      startAt,
+      endAt,
+      createdBy
+    });
+
     await doc.save();
     return res.json({ ok:true, competition: doc });
   } catch (err) {
@@ -197,6 +216,7 @@ router.put('/:id', requireAuth, requireAdmin, async (req, res) => {
     ['name','description'].forEach(k => { if (typeof req.body[k] !== 'undefined') upd[k] = req.body[k]; });
     if (req.body.startAt || req.body.start) upd.startAt = parseIsoOrNull(req.body.startAt || req.body.start);
     if (req.body.endAt || req.body.end) upd.endAt = parseIsoOrNull(req.body.endAt || req.body.end);
+    if (upd.startAt && upd.endAt && upd.startAt > upd.endAt) return res.status(400).json({ ok:false, error:'startAt must be before endAt' });
     upd.updatedAt = new Date();
     const updated = await Competition.findByIdAndUpdate(id, { $set: upd }, { new: true }).lean();
     if (!updated) return res.status(404).json({ ok:false, error:'Not found' });
