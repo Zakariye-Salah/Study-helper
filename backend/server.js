@@ -808,6 +808,8 @@ const lessonsRouters = require('./routes/lessons');
 const ratingsRouters = require('./routes/ratings');
 const commentsRouters = require('./routes/comments');
 
+const competitionsRouter = require('./routes/competitions');
+
 const gamesPlaysRouter = require('./routes/gamesPlays');
 
 // uploads router (multipart + JSON uploads)
@@ -971,6 +973,7 @@ app.use('/api/comments', commentsRouters);
 // ... later, after other routes
 app.use('/api', gamesPlaysRouter); // or app.use('/api/gamesPlays', gamesPlaysRouter);
 
+app.use('/api/competitions', competitionsRouter);
 
 // mount uploads router if loaded (guarded)
 if (uploadsRouter) {
