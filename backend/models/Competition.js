@@ -1,7 +1,12 @@
-//backend/models/Competition.js
+// backend/models/Competition.js
 'use strict';
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
+
+/**
+ * Competition + CompetitionParticipant models
+ * Use safe (idempotent) model registration to avoid OverwriteModelError
+ */
 
 const CompetitionSchema = new Schema({
   name: { type: String, required: true, trim: true },
@@ -24,7 +29,8 @@ const CompetitionParticipantSchema = new Schema({
 });
 CompetitionParticipantSchema.index({ competitionId: 1, totalPoints: -1 });
 
-const Competition = mongoose.model('Competition', CompetitionSchema);
-const CompetitionParticipant = mongoose.model('CompetitionParticipant', CompetitionParticipantSchema);
+// Idempotent model export — avoid OverwriteModelError
+const Competition = mongoose.models.Competition || mongoose.model('Competition', CompetitionSchema);
+const CompetitionParticipant = mongoose.models.CompetitionParticipant || mongoose.model('CompetitionParticipant', CompetitionParticipantSchema);
 
 module.exports = { Competition, CompetitionParticipant };
