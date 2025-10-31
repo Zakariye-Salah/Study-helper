@@ -1,4 +1,5 @@
-/// backend/routes/competitions.js
+
+// File: backend/routes/competitions.js
 'use strict';
 const express = require('express');
 const router = express.Router();
@@ -6,7 +7,20 @@ const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 
-// --- auth helpers (unchanged) ---
+// Try to load models; fall back to mongoose.models if require fails
+let Competition, CompetitionParticipant, activeCompetitionQuery;
+try {
+  const compModels = require('../models/Competition');
+  Competition = compModels.Competition || compModels;
+  CompetitionParticipant = compModels.CompetitionParticipant || compModels;
+  activeCompetitionQuery = compModels.activeCompetitionQuery || null;
+} catch (e) {
+  Competition = mongoose.models.Competition;
+  CompetitionParticipant = mongoose.models.CompetitionParticipant;
+  activeCompetitionQuery = null;
+}
+
+// Auth helpers
 function requireAuth(req, res, next) {
   try {
     const auth = req.headers.authorization || req.headers.Authorization;
@@ -31,56 +45,6 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-// --- models (safe/idempotent) ---
-let Competition, CompetitionParticipant;
-try {
-  const compModels = require('../models/Competition');
-  Competition = compModels.Competition || compModels;
-  CompetitionParticipant = compModels.CompetitionParticipant || (mongoose.models.CompetitionParticipant || null);
-} catch (e) {
-  Competition = mongoose.models.Competition;
-  CompetitionParticipant = mongoose.models.CompetitionParticipant;
-}
-
-// If not registered already, create idempotent models
-if (!Competition) {
-  const { Schema } = mongoose;
-  const CompetitionSchema = new Schema({
-    // support both name and title for backward compatibility
-    name: { type: String, required: true, trim: true },
-    title: { type: String },
-    description: { type: String, default: '' },
-    startAt: { type: Date, default: null },
-    endAt: { type: Date, default: null },
-    deleted: { type: Boolean, default: false },
-    createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
-    createdAt: { type: Date, default: Date.now },
-    updatedAt: { type: Date, default: Date.now }
-  });
-  CompetitionSchema.index({ name: 'text', title: 'text' });
-  Competition = mongoose.models.Competition || mongoose.model('Competition', CompetitionSchema);
-}
-if (!CompetitionParticipant) {
-  const { Schema } = mongoose;
-  const CompetitionParticipantSchema = new Schema({
-    competitionId: { type: Schema.Types.ObjectId, ref: 'Competition', required: true, index: true },
-    studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    name: { type: String, default: '' },
-    totalPoints: { type: Number, default: 0 },
-    createdAt: { type: Date, default: Date.now }
-  });
-  CompetitionParticipant = mongoose.models.CompetitionParticipant || mongoose.model('CompetitionParticipant', CompetitionParticipantSchema);
-}
-
-console.log('[DEBUG] competitions router loaded');
-
-router.use((req, res, next) => {
-  try {
-    console.log('[competitions] %s %s - query=%o body=%o auth=%s', req.method, req.originalUrl || req.url, req.query, req.body, !!req.headers.authorization);
-  } catch (e) { console.log('[competitions] log error', e && e.stack); }
-  next();
-});
-
 // dev error helper — returns stack in non-production
 function devError(res, tag, err){
   console.error(tag, err && (err.stack || err));
@@ -96,6 +60,28 @@ function parseIsoOrNull(v) {
   if (isNaN(d.getTime())) return null;
   return d;
 }
+
+// safe helper that returns a query to find the active competition
+function getActiveCompetition(now = new Date()) {
+  if (activeCompetitionQuery) return Competition.findOne(activeCompetitionQuery(now)).sort({ startAt: -1, createdAt: -1 }).lean();
+  // fallback to previous behavior but accept null start/end
+  return Competition.findOne({
+    deleted: false,
+    $and: [
+      { $or: [ { startAt: { $lte: now } }, { startAt: null } ] },
+      { $or: [ { endAt: { $gte: now } }, { endAt: null } ] }
+    ]
+  }).sort({ startAt: -1, createdAt: -1 }).lean();
+}
+
+console.log('[DEBUG] competitions router loaded');
+
+router.use((req, res, next) => {
+  try {
+    console.log('[competitions] %s %s - query=%o body=%o auth=%s', req.method, req.originalUrl || req.url, req.query, req.body, !!req.headers.authorization);
+  } catch (e) { console.log('[competitions] log error', e && e.stack); }
+  next();
+});
 
 // Temporary debug endpoint — remove after debugging
 router.get('/__debug/schema', (req, res) => {
@@ -119,11 +105,19 @@ router.get('/__debug/schema', (req, res) => {
 });
 
 // --- list competitions ---
+// supports ?all=true to include deleted, ?limit & ?skip for pagination, ?search=text
 router.get('/', async (req, res) => {
   try {
     const includeDeleted = String(req.query.all || 'false') === 'true';
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50)));
+    const skip = Math.max(0, Number(req.query.skip || 0));
+
     const filter = includeDeleted ? {} : { deleted: false };
-    const rows = await Competition.find(filter).sort({ startAt: -1, createdAt: -1 }).lean();
+    if (req.query.search) {
+      filter.$text = { $search: String(req.query.search) };
+    }
+
+    const rows = await Competition.find(filter).sort({ startAt: -1, createdAt: -1 }).skip(skip).limit(limit).lean();
     return res.json({ ok:true, data: rows });
   } catch (err) {
     return devError(res, 'GET /competitions error', err);
@@ -134,7 +128,7 @@ router.get('/', async (req, res) => {
 router.get('/current', async (req, res) => {
   try {
     const now = new Date();
-    const current = await Competition.findOne({ deleted: false, startAt: { $lte: now }, endAt: { $gte: now } }).lean();
+    const current = await getActiveCompetition(now);
     return res.json({ ok:true, competition: current || null });
   } catch (err) {
     return devError(res, 'GET /competitions/current error', err);
@@ -145,7 +139,7 @@ router.get('/current', async (req, res) => {
 router.get('/leaderboard', async (req, res) => {
   try {
     const now = new Date();
-    const current = await Competition.findOne({ deleted: false, startAt: { $lte: now }, endAt: { $gte: now } }).lean();
+    const current = await getActiveCompetition(now);
     if (!current) return res.json({ ok:true, data: [], competitionId: null });
     const limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
     const rows = await CompetitionParticipant.find({ competitionId: current._id }).sort({ totalPoints: -1 }).limit(limit).lean();
@@ -161,10 +155,13 @@ router.get('/:id/leaderboard', async (req, res) => {
     let competitionId = req.params.id;
     if (competitionId === 'current') {
       const now = new Date();
-      const current = await Competition.findOne({ deleted: false, startAt: { $lte: now }, endAt: { $gte: now } }).lean();
+      const current = await getActiveCompetition(now);
       if (!current) return res.json({ ok:true, data: [], competitionId: null });
-      competitionId = current._id;
+      competitionId = String(current._id);
     }
+
+    // permit passing an ObjectId or a string id
+    if (!mongoose.Types.ObjectId.isValid(competitionId)) return res.status(400).json({ ok:false, error:'Invalid competition id' });
     const limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
     const rows = await CompetitionParticipant.find({ competitionId }).sort({ totalPoints: -1 }).limit(limit).lean();
     return res.json({ ok:true, data: rows });
@@ -187,6 +184,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // --- create (admin) ---
+// If no startAt/endAt provided and COMP_DEFAULT_DURATION_MS env var set, set start=now and end=start+duration
 router.post('/', requireAuth, requireAdmin, async (req, res) => {
   try {
     console.log('POST /api/competitions body=', req.body, 'user=', req.user && (req.user._id || req.user.id || req.user));
@@ -197,8 +195,15 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
 
     if (!payloadName) return res.status(400).json({ ok:false, error: 'Name (or title) required' });
 
-    const startAt = parseIsoOrNull(start);
-    const endAt = parseIsoOrNull(end);
+    let startAt = parseIsoOrNull(start);
+    let endAt = parseIsoOrNull(end);
+
+    // If both missing and env default provided, set sensible defaults
+    const defaultDurationMs = Number(process.env.COMP_DEFAULT_DURATION_MS || 0);
+    if (!startAt && !endAt && defaultDurationMs > 0) {
+      startAt = new Date();
+      endAt = new Date(startAt.getTime() + defaultDurationMs);
+    }
 
     if (startAt && endAt && startAt > endAt) {
       return res.status(400).json({ ok:false, error: 'startAt must be before endAt' });
@@ -225,10 +230,12 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
 
     try {
       await doc.save();
+
       // Emit socket update if io available (app should set io = ioInstance on app)
       try {
         const io = req.app && req.app.get && req.app.get('io');
         if (io && typeof io.emit === 'function') {
+          io.emit('competition:created', { competitionId: String(doc._id), startAt: doc.startAt, endAt: doc.endAt, name: doc.name });
           io.emit('competition:updated', { competitionId: String(doc._id), startAt: doc.startAt, endAt: doc.endAt, name: doc.name });
         }
       } catch (e) {
@@ -306,4 +313,3 @@ router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
 });
 
 module.exports = router;
-
