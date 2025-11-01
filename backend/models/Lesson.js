@@ -1,33 +1,37 @@
+// backend/models/Lesson.js
 'use strict';
 const mongoose = require('mongoose');
-const { Schema } = mongoose;
+const Schema = mongoose.Schema;
 
 const MediaSchema = new Schema({
-  type: { type: String, enum: ['video','audio','image','file','external'], default: 'video' },
-  url: { type: String, required: true },
+  type: { type: String, enum: ['video','audio','image','other'], default: 'video' },
+  url: { type: String, default: '' },
   title: { type: String, default: '' }
 }, { _id: false });
 
 const LessonSchema = new Schema({
-  courseId: { type: Schema.Types.ObjectId, ref: 'Course', required: true, index: true },
-  title: { type: String, required: true, index: true },
-  duration: { type: String, default: '' },
-  preview: { type: Boolean, default: false },
-  mediaUrl: { type: String, default: '' }, // legacy single-url convenience
-  media: { type: [MediaSchema], default: [] },
+  courseId: { type: Schema.Types.ObjectId, ref: 'Course', index: true, required: false },
+  courseRefId: { type: String, default: '' }, // store course.courseId (CRS00001) when created (optional)
+  title: { type: String, required: true },
   notes: { type: String, default: '' },
-  exercises: { type: [Schema.Types.Mixed], default: [] },
-  deleted: { type: Boolean, default: false },
+  duration: { type: String, default: '' },
+  media: { type: [MediaSchema], default: [] },
+  mediaUrl: { type: String, default: '' }, // convenience top-level
+  preview: { type: Boolean, default: false }, // preview available to non-enrolled users
+  order: { type: Number, default: 0 },
   createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
-  updatedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null }
-}, { timestamps: true });
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now },
+  deleted: { type: Boolean, default: false }
+});
 
-// convenience: ensure mediaUrl is in sync with media[0] when present
-LessonSchema.pre('save', function(next){
-  if ((!this.mediaUrl || this.mediaUrl === '') && Array.isArray(this.media) && this.media.length) {
-    this.mediaUrl = this.media[0].url || this.mediaUrl;
-  }
+// autopopulate updatedAt
+LessonSchema.pre('save', function(next) {
+  this.updatedAt = new Date();
   next();
 });
+
+// text index on title/notes for search support
+LessonSchema.index({ title: 'text', notes: 'text' });
 
 module.exports = mongoose.models.Lesson || mongoose.model('Lesson', LessonSchema);
