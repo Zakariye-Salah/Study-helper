@@ -371,7 +371,17 @@ function toObjectIdIfPossible(id) {
   return id;
 }
 
-
+async function findCourseByIdOrCourseId(idOrCode) {
+  if (!idOrCode) return null;
+  // if looks like ObjectId try findById first
+  if (mongoose.Types.ObjectId.isValid(idOrCode)) {
+    const byId = await Course.findById(idOrCode).lean().exec().catch(()=>null);
+    if (byId) return byId;
+  }
+  // fallback to courseId field (like 'CRS00001')
+  const byCode = await Course.findOne({ courseId: idOrCode }).lean().exec().catch(()=>null);
+  return byCode;
+}
 
 /**
  * GET /api/courses
@@ -671,146 +681,175 @@ router.delete('/:id/permanent', auth, roles(['admin']), async (req, res) => {
  * GET /api/courses/:id/lessons
  * returns lessons for this course (not deleted)
  */
-router.get('/:id/lessons', auth, async (req, res) => {
-  try {
-    const cid = req.params.id;
-    // resolve course id if courseId string provided
-    const course = await Course.findOne({ $or: [{ _id: cid }, { courseId: cid }] }).lean();
-    if (!course) return res.status(404).json({ ok:false, message: 'Course not found' });
 
-    const lessons = await Lesson.find({ courseId: course._id, deleted: { $ne: true } }).sort({ createdAt: 1 }).lean();
-    return res.json({ ok: true, items: lessons });
+/**
+ * GET /api/courses/:id/lessons
+ * Returns lessons for course (from Lesson collection). Public by default.
+ */
+router.get('/:id/lessons', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const course = await findCourseByIdOrCourseId(id);
+    if (!course) return res.status(404).json({ ok:false, error: 'Course not found' });
+
+    // allow optional query params: preview=true to include preview, includeDeleted=true
+    const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
+    const includePreview = req.query.preview === '1' || req.query.preview === 'true';
+
+    const q = { deleted: { $ne: true } };
+    if (!includeDeleted) q.deleted = { $ne: true };
+    q.$or = [{ courseId: mongoose.Types.ObjectId(course._id) }, { courseRefId: course.courseId || '' }];
+
+    // If requestor not authenticated, filter out non-preview lessons
+    if (!req.user && !includePreview) {
+      q.preview = true; // only show preview lessons for public access
+    }
+
+    const lessons = await Lesson.find(q).sort({ order: 1, createdAt: 1 }).lean().exec();
+    return res.json({ ok:true, lessons });
   } catch (err) {
-    console.error('GET /courses/:id/lessons', err);
-    return res.status(500).json({ ok:false, message:'Server error' });
+    console.error('GET /courses/:id/lessons error', err && (err.stack || err));
+    return res.status(500).json({ ok:false, error: 'Server error' });
   }
 });
 
 /**
  * GET /api/courses/:id/lessons/:lid
  */
-router.get('/:id', auth, async (req, res) => {
+router.get('/:id/lessons/:lid', async (req, res) => {
   try {
     const id = req.params.id;
-    const l = await Lesson.findById(id).lean();
-    if (!l || l.deleted) return res.status(404).json({ ok:false, message:'Lesson not found' });
-    return res.json({ ok:true, lesson: l });
+    const lid = req.params.lid;
+    const course = await findCourseByIdOrCourseId(id);
+    if (!course) return res.status(404).json({ ok:false, error: 'Course not found' });
+
+    // find lesson either by its _id or by fallback fields and ensure it belongs to course
+    let lesson = null;
+    if (mongoose.Types.ObjectId.isValid(lid)) {
+      lesson = await Lesson.findOne({ _id: lid, deleted: { $ne: true }, $or: [{ courseId: course._id }, { courseRefId: course.courseId }] }).lean().exec().catch(()=>null);
+    }
+    if (!lesson) {
+      // try by id-like property or string id
+      lesson = await Lesson.findOne({ $or: [{ _id: lid }, { id: lid }], deleted: { $ne: true }, $or: [{ courseId: course._id }, { courseRefId: course.courseId }] }).lean().exec().catch(()=>null);
+    }
+    if (!lesson) return res.status(404).json({ ok:false, error: 'Lesson not found' });
+
+    return res.json({ ok:true, lesson });
   } catch (err) {
-    console.error('GET /lessons/:id', err);
-    return res.status(500).json({ ok:false, message:'Server error' });
+    console.error('GET /courses/:id/lessons/:lid error', err && (err.stack || err));
+    return res.status(500).json({ ok:false, error: 'Server error' });
   }
 });
 
 /**
- * POST /api/courses/:id/lessons  (admin)
- * Accepts JSON body: { title, duration, preview, mediaUrl, notes, media: [] }
- * If mediaUrl provided but no media array, we put a single media entry (type guessed by extension)
+ * POST /api/courses/:id/lessons  (admin/manager)
+ * Body: { title, notes, duration, mediaUrl, preview, order }
  */
-router.post('/', auth, roles(['admin']), async (req, res) => {
+router.post('/:id/lessons', requireAuth, requireAdmin, async (req, res) => {
   try {
+    const id = req.params.id;
     const body = req.body || {};
-    if (!body.courseId) return res.status(400).json({ ok:false, message:'courseId required' });
-    if (!body.title) return res.status(400).json({ ok:false, message:'title required' });
+    if (!body.title || !String(body.title).trim()) return res.status(400).json({ ok:false, error: 'Title required' });
 
-    const course = await Course.findOne({ $or: [{ _id: body.courseId }, { courseId: body.courseId }] });
-    if (!course) return res.status(404).json({ ok:false, message:'Course not found' });
+    const course = await findCourseByIdOrCourseId(id);
+    if (!course) return res.status(404).json({ ok:false, error: 'Course not found' });
 
-    const ls = new Lesson({
+    const lesson = new Lesson({
       courseId: course._id,
+      courseRefId: course.courseId || '',
       title: String(body.title).trim(),
+      notes: body.notes || '',
       duration: body.duration || '',
       preview: !!body.preview,
-      mediaUrl: body.mediaUrl || '',
-      media: Array.isArray(body.media) ? body.media : (body.mediaUrl ? [{ type: (body.mediaType||'video'), url: body.mediaUrl, title: body.title }] : []),
-      notes: body.notes || '',
-      exercises: Array.isArray(body.exercises) ? body.exercises : [],
-      createdBy: toObjectIdIfPossible(req.user._id)
+      order: Number(body.order || 0),
+      mediaUrl: body.mediaUrl || (Array.isArray(body.media) && body.media[0] && body.media[0].url) || '',
+      media: Array.isArray(body.media) ? body.media : (body.mediaUrl ? [{ url: body.mediaUrl, type: body.mediaType || 'video' }] : []),
+      createdBy: req.user && req.user._id
     });
-    await ls.save();
 
-    // if preview: ensure course.previewLessonIds sticks
-    if (ls.preview) {
-      if (!Array.isArray(course.previewLessonIds)) course.previewLessonIds = [];
-      if (!course.previewLessonIds.some(x => String(x) === String(ls._id))) {
-        course.previewLessonIds.push(ls._id);
-        await course.save();
-      }
-    }
+    await lesson.save();
 
-    return res.json({ ok:true, lesson: ls });
+    // emit socket event so client can refresh
+    try {
+      const io = req.app && req.app.get && req.app.get('io');
+      if (io) io.emit('course:lesson_created', { courseId: String(course._id), lesson: lesson });
+    } catch (e) { console.warn('emit lesson_created failed', e); }
+
+    return res.json({ ok:true, lesson });
   } catch (err) {
-    console.error('POST /lessons', err);
-    return res.status(500).json({ ok:false, message:'Server error' });
+    console.error('POST /courses/:id/lessons error', err && (err.stack || err));
+    return res.status(500).json({ ok:false, error: 'Server error' });
   }
 });
-
 
 /**
  * PUT /api/courses/:id/lessons/:lid  (admin)
- * update lesson basic fields
  */
-router.put('/:id', auth, roles(['admin']), async (req, res) => {
+router.put('/:id/lessons/:lid', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const id = req.params.id;
+    const course = await findCourseByIdOrCourseId(req.params.id);
+    if (!course) return res.status(404).json({ ok:false, error: 'Course not found' });
+
+    const lid = req.params.lid;
+    // allow object id or string id
+    const q = { deleted: { $ne: true }, $or: [{ courseId: course._id }, { courseRefId: course.courseId }] };
+    if (mongoose.Types.ObjectId.isValid(lid)) q._id = mongoose.Types.ObjectId(lid);
+    else q._id = lid;
+
     const body = req.body || {};
-    const ls = await Lesson.findById(id);
-    if (!ls || ls.deleted) return res.status(404).json({ ok:false, message:'Lesson not found' });
-
-    const upable = ['title','duration','preview','mediaUrl','media','notes','exercises'];
-    upable.forEach(k => { if (typeof body[k] !== 'undefined') ls[k] = body[k]; });
-    ls.updatedBy = toObjectIdIfPossible(req.user._id);
-    await ls.save();
-
-    // try to keep course.previewLessonIds consistent as before
-    if (typeof body.preview !== 'undefined') {
-      const course = await Course.findById(ls.courseId);
-      if (course) {
-        const idStr = ls._id;
-        if (!!ls.preview) {
-          if (!Array.isArray(course.previewLessonIds)) course.previewLessonIds = [];
-          if (!course.previewLessonIds.some(x => String(x) === String(idStr))) {
-            course.previewLessonIds.push(ls._id);
-            await course.save();
-          }
-        } else {
-          course.previewLessonIds = (course.previewLessonIds || []).filter(x => String(x) !== String(idStr));
-          await course.save();
-        }
-      }
+    const upd = {};
+    if (typeof body.title !== 'undefined') upd.title = String(body.title || '').trim();
+    if (typeof body.notes !== 'undefined') upd.notes = body.notes || '';
+    if (typeof body.duration !== 'undefined') upd.duration = body.duration || '';
+    if (typeof body.preview !== 'undefined') upd.preview = !!body.preview;
+    if (typeof body.order !== 'undefined') upd.order = Number(body.order || 0);
+    if (typeof body.mediaUrl !== 'undefined') {
+      upd.mediaUrl = body.mediaUrl || '';
+      upd.media = Array.isArray(body.media) ? body.media : (body.mediaUrl ? [{ url: body.mediaUrl, type: body.mediaType || 'video' }] : []);
     }
 
-    return res.json({ ok:true, lesson: ls });
+    const lesson = await Lesson.findOneAndUpdate(q, upd, { new: true }).lean().exec();
+    if (!lesson) return res.status(404).json({ ok:false, error: 'Lesson not found' });
+
+    try {
+      const io = req.app && req.app.get && req.app.get('io');
+      if (io) io.emit('course:lesson_updated', { courseId: String(course._id), lesson });
+    } catch (e) {}
+
+    return res.json({ ok:true, lesson });
   } catch (err) {
-    console.error('PUT /lessons/:id', err);
-    return res.status(500).json({ ok:false, message:'Server error' });
+    console.error('PUT /courses/:id/lessons/:lid error', err && (err.stack || err));
+    return res.status(500).json({ ok:false, error: 'Server error' });
   }
 });
 
 /**
- * DELETE /api/lessons/:id  (admin) - soft delete
+ * DELETE /api/courses/:id/lessons/:lid  (soft-delete) (admin)
  */
-router.delete('/:id', auth, roles(['admin']), async (req, res) => {
+router.delete('/:id/lessons/:lid', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const id = req.params.id;
-    const ls = await Lesson.findById(id);
-    if (!ls) return res.status(404).json({ ok:false, message:'Lesson not found' });
-    ls.deleted = true;
-    await ls.save();
+    const course = await findCourseByIdOrCourseId(req.params.id);
+    if (!course) return res.status(404).json({ ok:false, error: 'Course not found' });
 
-    // remove from course.previewLessonIds
-    const course = await Course.findById(ls.courseId);
-    if (course) {
-      course.previewLessonIds = (course.previewLessonIds || []).filter(x => String(x) !== String(id));
-      await course.save();
-    }
+    const lid = req.params.lid;
+    const q = { $or: [{ courseId: course._id }, { courseRefId: course.courseId }] };
+    if (mongoose.Types.ObjectId.isValid(lid)) q._id = mongoose.Types.ObjectId(lid);
+    else q._id = lid;
 
-    return res.json({ ok:true, deleted:true });
+    const lesson = await Lesson.findOneAndUpdate(q, { deleted: true }, { new: true }).lean().exec();
+    if (!lesson) return res.status(404).json({ ok:false, error: 'Lesson not found' });
+
+    try {
+      const io = req.app && req.app.get && req.app.get('io');
+      if (io) io.emit('course:lesson_deleted', { courseId: String(course._id), lessonId: lesson._id });
+    } catch (e) {}
+
+    return res.json({ ok:true, message: 'Deleted' });
   } catch (err) {
-    console.error('DELETE /lessons/:id', err);
-    return res.status(500).json({ ok:false, message:'Server error' });
+    console.error('DELETE /courses/:id/lessons/:lid error', err && (err.stack || err));
+    return res.status(500).json({ ok:false, error: 'Server error' });
   }
 });
-
 /**
  * POST /api/lessons/:id/media  (admin)
  * body: { url, type, title }  -> push to lesson.media
